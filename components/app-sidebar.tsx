@@ -1,8 +1,10 @@
 import { UserButton } from "@clerk/nextjs"
 import { formatDistanceToNowStrict } from "date-fns"
+import Link from "next/link"
 
 import { ChatAvatar } from "@/components/chat-avatar"
 import { CreateMenu } from "@/components/create-menu"
+import { SearchCommand, SearchCommandItem } from "@/components/search-command"
 import {
   Sidebar,
   SidebarContent,
@@ -13,6 +15,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
 } from "@/components/ui/sidebar"
 import { getChats } from "@/queries/bots"
 
@@ -20,17 +23,36 @@ export async function AppSidebar() {
   const chats = await getChats()
 
   return (
-    <Sidebar>
-      <SidebarHeader className="flex-row justify-end">
-        <CreateMenu />
+    <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <div className="flex justify-end">
+          <CreateMenu />
+        </div>
+        <SearchCommand>
+          {chats.map((chat) => (
+            <SearchCommandItem
+              key={chat.id}
+              href={`/chats/${chat.id}`}
+              value={chat.id}
+              keywords={[chat.name ?? chat.bot.name]}
+            >
+              <ChatAvatar seed={chat.bot.avatar} />
+              <span className="truncate">{chat.name ?? chat.bot.name}</span>
+            </SearchCommandItem>
+          ))}
+        </SearchCommand>
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="group-data-[collapsible=icon]:overflow-auto">
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
               {chats.map((chat) => (
                 <SidebarMenuItem key={chat.id}>
-                  <SidebarMenuButton size="lg">
+                  <SidebarMenuButton
+                    size="lg"
+                    tooltip={chat.name ?? chat.bot.name}
+                    render={<Link href={`/chats/${chat.id}`} />}
+                  >
                     <ChatAvatar seed={chat.bot.avatar} />
                     <div className="grid flex-1 text-left leading-tight">
                       <div className="flex items-baseline gap-2">
@@ -67,7 +89,7 @@ export async function AppSidebar() {
                 elements: {
                   rootBox: "flex! w-full!",
                   userButtonTrigger:
-                    "flex! h-8! w-full! items-center! justify-start! gap-2! overflow-hidden! rounded-md! p-2! text-left! text-sm! text-sidebar-foreground! shadow-none! ring-sidebar-ring! outline-hidden! hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-2! active:bg-sidebar-accent! active:text-sidebar-accent-foreground! aria-expanded:bg-sidebar-accent! aria-expanded:text-sidebar-accent-foreground!",
+                    "flex! h-8! w-full! items-center! justify-start! gap-2! overflow-hidden! rounded-md! p-2! text-left! text-sm! text-sidebar-foreground! shadow-none! ring-sidebar-ring! outline-hidden! hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-2! active:bg-sidebar-accent! active:text-sidebar-accent-foreground! aria-expanded:bg-sidebar-accent! aria-expanded:text-sidebar-accent-foreground! group-data-[collapsible=icon]:p-1!",
                   userButtonBox: "min-w-0! flex-1! gap-2!",
                   userButtonAvatarBox: "order-first! size-6! shrink-0!",
                   userButtonOuterIdentifier:
@@ -78,6 +100,7 @@ export async function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   )
 }

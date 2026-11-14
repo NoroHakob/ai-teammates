@@ -1,4 +1,5 @@
 import { auth } from "@clerk/nextjs/server"
+import { cookies } from "next/headers"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
@@ -11,8 +12,12 @@ export default async function DashboardLayout({
   // The sidebar loads the user's chats, so signed-out visitors go to sign-in first
   await auth.protect()
 
+  const cookieStore = await cookies()
+  // SidebarProvider writes this cookie on every toggle
+  const defaultOpen = cookieStore.get("sidebar_state")?.value !== "false"
+
   return (
-    <SidebarProvider>
+    <SidebarProvider defaultOpen={defaultOpen}>
       <AppSidebar />
       <SidebarInset>{children}</SidebarInset>
     </SidebarProvider>

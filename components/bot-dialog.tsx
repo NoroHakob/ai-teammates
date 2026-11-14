@@ -57,14 +57,32 @@ const presets = [
   },
 ]
 
-export function BotDialog({ children }: { children: React.ReactNode }) {
-  const [open, setOpen] = useState(false)
+// With children it renders its own trigger and owns the open state;
+// without children the parent controls it through open/onOpenChange.
+export function BotDialog({
+  children,
+  open: openProp,
+  onOpenChange,
+}: {
+  children?: React.ReactNode
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
+  const [openState, setOpenState] = useState(false)
+  const open = openProp ?? openState
+
+  function setOpen(next: boolean) {
+    setOpenState(next)
+    onOpenChange?.(next)
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="secondary" />}>
-        {children}
-      </DialogTrigger>
+      {children && (
+        <DialogTrigger render={<Button variant="secondary" />}>
+          {children}
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>New bot</DialogTitle>

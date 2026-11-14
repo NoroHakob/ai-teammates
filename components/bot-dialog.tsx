@@ -158,7 +158,6 @@ function BotForm({ onCreated }: { onCreated: () => void }) {
               <Input
                 {...field}
                 id="bot-name"
-                placeholder="Ada"
                 autoComplete="off"
                 aria-invalid={fieldState.invalid}
               />

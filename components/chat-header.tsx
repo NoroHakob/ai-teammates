@@ -1,11 +1,16 @@
+"use client"
+
 import { MonitorIcon } from "lucide-react"
 
 import { BotDialog } from "@/components/bot-dialog"
 import { ChatAvatar } from "@/components/chat-avatar"
+import { useDesktopPanel } from "@/components/desktop-panel"
 import { Button } from "@/components/ui/button"
 import type { ChatWithBot } from "@/queries/bots"
 
 export function ChatHeader({ chat }: { chat: ChatWithBot }) {
+  const { open, toggle } = useDesktopPanel()
+
   return (
     <header
       data-slot="chat-header"
@@ -27,6 +32,8 @@ export function ChatHeader({ chat }: { chat: ChatWithBot }) {
         size="icon-sm"
         className="ml-auto"
         aria-label="Desktop"
+        aria-pressed={open}
+        onClick={toggle}
       >
         <MonitorIcon />
       </Button>

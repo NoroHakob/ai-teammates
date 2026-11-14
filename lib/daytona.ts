@@ -58,6 +58,28 @@ export async function getRunningSandbox(sandboxId: string): Promise<Sandbox> {
   return sandbox
 }
 
+// noVNC (websockify) inside the default image
+const NOVNC_PORT = 6080
+const DESKTOP_URL_TTL_SECONDS = 60 * 60
+
+// A websocket URL for the bot's desktop, for a noVNC client in the browser.
+// The URL itself is the credential (signed, one port, 1 hour): never log it.
+export async function getBotDesktopUrl(botId: string): Promise<string> {
+  const sandbox = await getRunningSandbox(await ensureBotSandbox(botId))
+  const { status } = await sandbox.computerUse.getStatus()
+  if (status !== "active") {
+    await sandbox.computerUse.start()
+  }
+  const { url } = await sandbox.getSignedPreviewUrl(
+    NOVNC_PORT,
+    DESKTOP_URL_TTL_SECONDS
+  )
+  const wsUrl = new URL(url)
+  wsUrl.protocol = wsUrl.protocol === "http:" ? "ws:" : "wss:"
+  wsUrl.pathname = "/websockify"
+  return wsUrl.toString()
+}
+
 export async function deleteSandbox(sandboxId: string) {
   try {
     const sandbox = await getDaytona().get(sandboxId)

@@ -1,6 +1,18 @@
 {
   "version": 2,
   "skills": {
+    "ai-elements": {
+      "source": "vercel/ai-elements",
+      "sourceType": "github",
+      "skillPath": "skills/ai-elements/SKILL.md",
+      "computedHash": "e92b5aca35680ce4a8ed672ae9d8d8b58335e7fd48e3321911590882a7e7f619"
+    },
+    "ai-sdk": {
+      "source": "vercel/ai",
+      "sourceType": "github",
+      "skillPath": "skills/use-ai-sdk/SKILL.md",
+      "computedHash": "59cd2dc82c5458f2819992fc3d27204ed16edfc9170870c6f8f04c44bac17772"
+    },
     "clerk": {
       "source": "clerk/skills",
       "sourceType": "github",

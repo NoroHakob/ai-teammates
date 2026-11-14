@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 
 import { Chat } from "@/components/chat"
 import { ChatHeader } from "@/components/chat-header"
+import type { ChatUIMessage } from "@/lib/sandbox-tools"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
 
@@ -23,7 +24,14 @@ export default async function ChatPage({
   return (
     <div className="flex h-svh flex-col">
       <ChatHeader chat={chat} />
-      <Chat key={chat.id} chatId={chat.id} initialMessages={messages} />
+      <Chat
+        key={chat.id}
+        chatId={chat.id}
+        initialMessages={
+          // Assistant parts are only ever written by the chat route, with these tools
+          messages as ChatUIMessage[]
+        }
+      />
     </div>
   )
 }

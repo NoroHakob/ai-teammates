@@ -12,6 +12,7 @@ import {
   chats,
   type BotInsert,
 } from "@/db/schema"
+import { deleteSandbox } from "@/lib/daytona"
 
 export async function createBot(values: BotInsert) {
   const { isAuthenticated, userId } = await auth()
@@ -73,7 +74,20 @@ export async function deleteBot(botId: string) {
     throw new Error("Not authenticated")
   }
 
-  await db.transaction(async (tx) => {
+  const [owned] = await db
+    .select({ sandboxId: bots.sandboxId })
+    .from(bots)
+    .where(and(eq(bots.id, botId), eq(bots.userId, userId)))
+  if (!owned) {
+    throw new Error("Bot not found")
+  }
+
+  // Delete the sandbox first: if that fails the bot stays, so the delete can be retried
+  if (owned.sandboxId) {
+    await deleteSandbox(owned.sandboxId)
+  }
+
+  const deleted = await db.transaction(async (tx) => {
     // A direct chat is nothing without its bot; memberships go with the bot
     await tx
       .delete(chats)
@@ -94,13 +108,27 @@ export async function deleteBot(botId: string) {
     const [bot] = await tx
       .delete(bots)
       .where(and(eq(bots.id, botId), eq(bots.userId, userId)))
-      .returning({ id: bots.id })
+      .returning({ id: bots.id, sandboxId: bots.sandboxId })
 
     if (!bot) {
       // Throwing rolls back the chat delete above
       throw new Error("Bot not found")
     }
+
+    return bot
   })
+
+  // A chat running meanwhile may have created a new sandbox; don't leave it behind
+  if (deleted.sandboxId && deleted.sandboxId !== owned.sandboxId) {
+    try {
+      await deleteSandbox(deleted.sandboxId)
+    } catch (error) {
+      console.error(
+        "Failed to delete sandbox",
+        error instanceof Error ? error.name : typeof error
+      )
+    }
+  }
 
   revalidatePath("/", "layout")
 }

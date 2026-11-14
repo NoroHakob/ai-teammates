@@ -4,10 +4,12 @@ import {
   convertToModelMessages,
   createUIMessageStreamResponse,
   generateId,
+  stepCountIs,
   streamText,
   toUIMessageStream,
   TypeValidationError,
   validateUIMessages,
+  type ModelMessage,
   type UIMessage,
 } from "ai"
 import { eq } from "drizzle-orm"
@@ -15,6 +17,7 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db"
 import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
+import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
 
@@ -55,8 +58,45 @@ async function saveMessage(chatId: string, message: UIMessage) {
     .where(eq(chats.id, chatId))
 }
 
-function hasText(parts: UIMessage["parts"]) {
-  return parts.some((part) => part.type === "text" && part.text.trim() !== "")
+// A reply is worth keeping if it said something or did something
+function isWorthSaving(parts: ChatUIMessage["parts"]) {
+  return parts.some(
+    (part) =>
+      (part.type === "text" && part.text.trim() !== "") ||
+      part.type.startsWith("tool-")
+  )
+}
+
+const SCREENSHOT_TOOLS = new Set(["viewScreen", "showScreen"])
+const OLD_SCREENSHOT =
+  "[Screenshot from an earlier turn, no longer available. Call viewScreen to see the screen now.]"
+
+// Stored history only: old screenshots would otherwise be re-sent as images on every turn
+function withoutOldScreenshots(messages: ModelMessage[]): ModelMessage[] {
+  return messages.map((message) =>
+    message.role === "tool"
+      ? {
+          ...message,
+          content: message.content.map((part) =>
+            part.type === "tool-result" && SCREENSHOT_TOOLS.has(part.toolName)
+              ? {
+                  ...part,
+                  output: { type: "text" as const, value: OLD_SCREENSHOT },
+                }
+              : part
+          ),
+        }
+      : message
+  )
+}
+
+// The model's own screenshots aren't shown to the person, so don't keep their pixels
+function withoutViewScreenImages(parts: ChatUIMessage["parts"]) {
+  return parts.map((part) =>
+    part.type === "tool-viewScreen" && part.state === "output-available"
+      ? { ...part, output: { ...part.output, base64: "" } }
+      : part
+  )
 }
 
 // Errors from the database or the provider can carry message text, so only log what kind of error it was.
@@ -134,12 +174,16 @@ export async function POST(req: Request) {
   // A retried send reuses the stored message instead of appending it twice
   const alreadyStored = previousMessages.some((m) => m.id === newMessage.id)
 
-  let validatedMessages: UIMessage[]
+  const { bot } = chat
+  const tools = createSandboxTools(bot.id)
+
+  let validatedMessages: ChatUIMessage[]
   try {
-    validatedMessages = await validateUIMessages({
+    validatedMessages = await validateUIMessages<ChatUIMessage>({
       messages: alreadyStored
         ? previousMessages
         : [...previousMessages, newMessage],
+      tools,
     })
   } catch (error) {
     if (error instanceof TypeValidationError) {
@@ -156,10 +200,17 @@ export async function POST(req: Request) {
     return new Response("Internal server error", { status: 500 })
   }
 
-  const { bot } = chat
   const system = [
     `You are ${bot.name}. Your job: ${bot.job}.`,
     bot.instructions && `How you should work: ${bot.instructions}`,
+    [
+      "You have your own isolated Linux sandbox. Files you create there persist between conversations. It also has a 1024x768 desktop.",
+      "Prefer the shell and file tools; use the desktop only when the task needs a screen.",
+      "Call viewScreen before and after desktop actions so you know what is on the screen.",
+      "Call showScreen only when the person asks to see the screen.",
+      "Do the work with your tools instead of describing what you would do.",
+      "If something fails, say so plainly.",
+    ].join(" "),
   ]
     .filter(Boolean)
     .join("\n\n")
@@ -168,17 +219,26 @@ export async function POST(req: Request) {
     model: chatModel,
     system,
     // Past reasoning is optional for OpenAI and a reasoning item without its
-    // following output is rejected, so the model only sees earlier text
-    messages: await convertToModelMessages(
-      validatedMessages.map((message) =>
-        message.role === "assistant"
-          ? {
-              ...message,
-              parts: message.parts.filter((part) => part.type !== "reasoning"),
-            }
-          : message
+    // following output is rejected, so the model only sees earlier text and tool calls
+    messages: withoutOldScreenshots(
+      await convertToModelMessages(
+        validatedMessages.map((message) =>
+          message.role === "assistant"
+            ? {
+                ...message,
+                parts: message.parts.filter(
+                  (part) => part.type !== "reasoning"
+                ),
+              }
+            : message
+        ),
+        // A stopped reply can hold a tool call that never got its result
+        { tools, ignoreIncompleteToolCalls: true }
       )
     ),
+    tools,
+    // Each step is a model call; cap the cost of one reply
+    stopWhen: stepCountIs(20),
     abortSignal: req.signal,
     // The default handler logs the whole error, which can include the request body
     onError: ({ error }) => logError("Chat stream failed", error),
@@ -187,16 +247,28 @@ export async function POST(req: Request) {
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
+      tools,
       originalMessages: validatedMessages,
       generateMessageId: generateId,
-      // Runs on success, error and abort; keep whatever text the bot managed to say
+      // Runs on success, error and abort; keep whatever the bot managed to say and do
       onEnd: async ({ responseMessage, isAborted }) => {
-        if (!hasText(responseMessage.parts)) return
-
-        // A stopped reply's reasoning can be cut off, so keep only what it said
-        const parts = isAborted
-          ? responseMessage.parts.filter((part) => part.type !== "reasoning")
-          : responseMessage.parts
+        // A stopped reply's reasoning can be cut off and its last tool call may
+        // never have finished, so keep only what it said and what it completed
+        const parts = withoutViewScreenImages(
+          isAborted
+            ? responseMessage.parts.filter(
+                (part) =>
+                  part.type !== "reasoning" &&
+                  !(
+                    part.type.startsWith("tool-") &&
+                    "state" in part &&
+                    (part.state === "input-streaming" ||
+                      part.state === "input-available")
+                  )
+              )
+            : responseMessage.parts
+        )
+        if (!isWorthSaving(parts)) return
 
         try {
           await saveMessage(chat.id, { ...responseMessage, parts })

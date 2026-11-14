@@ -1,12 +1,14 @@
 import { relations } from "drizzle-orm"
 import {
   index,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core"
+import type { UIMessage } from "ai"
 import { createInsertSchema } from "drizzle-zod"
 import { nanoid } from "nanoid"
 import type { z } from "zod"
@@ -72,12 +74,37 @@ export const chatMembers = pgTable(
   ]
 )
 
+export const messageRole = pgEnum("message_role", ["user", "assistant"])
+
+export const messages = pgTable(
+  "messages",
+  {
+    // The UI message ID
+    id: text().primaryKey(),
+    chatId: text()
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    role: messageRole().notNull(),
+    // UIMessage parts
+    parts: jsonb().$type<UIMessage["parts"]>().notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("messages_chat_id_created_at_idx").on(table.chatId, table.createdAt),
+  ]
+)
+
 export const botsRelations = relations(bots, ({ many }) => ({
   memberships: many(chatMembers),
 }))
 
 export const chatsRelations = relations(chats, ({ many }) => ({
   members: many(chatMembers),
+  messages: many(messages),
+}))
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  chat: one(chats, { fields: [messages.chatId], references: [chats.id] }),
 }))
 
 export const chatMembersRelations = relations(chatMembers, ({ one }) => ({
@@ -93,6 +120,9 @@ export type NewChat = typeof chats.$inferInsert
 
 export type ChatMember = typeof chatMembers.$inferSelect
 export type NewChatMember = typeof chatMembers.$inferInsert
+
+export type Message = typeof messages.$inferSelect
+export type NewMessage = typeof messages.$inferInsert
 
 export const botInsertSchema = createInsertSchema(bots, {
   name: (schema) =>

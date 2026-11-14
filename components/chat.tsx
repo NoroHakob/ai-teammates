@@ -1,6 +1,9 @@
 "use client"
 
 import { useChat } from "@ai-sdk/react"
+import { DefaultChatTransport, type UIMessage } from "ai"
+import { useRouter } from "next/navigation"
+import { useState } from "react"
 
 import {
   Conversation,
@@ -19,11 +22,42 @@ import {
   PromptInputTextarea,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
+import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 
-export function Chat({ chatId }: { chatId: string }) {
+function hasVisibleText(message: UIMessage) {
+  return message.parts.some(
+    (part) => part.type === "text" && part.text.trim() !== ""
+  )
+}
+
+export function Chat({
+  chatId,
+  initialMessages,
+}: {
+  chatId: string
+  initialMessages: UIMessage[]
+}) {
+  const router = useRouter()
+  const [transport] = useState(
+    () =>
+      new DefaultChatTransport({
+        api: "/api/chat",
+        // The server keeps the history, so send only the new message
+        prepareSendMessagesRequest({ messages, id }) {
+          return { body: { id, message: messages[messages.length - 1] } }
+        },
+      })
+  )
+
   const { messages, sendMessage, status, stop } = useChat({
     id: chatId,
+    messages: initialMessages,
+    transport,
+    onFinish: () => {
+      // Refresh the sidebar's preview and order
+      router.refresh()
+    },
     onError: () => {
       toast.add({
         type: "error",
@@ -32,6 +66,14 @@ export function Chat({ chatId }: { chatId: string }) {
       })
     },
   })
+
+  // Before the reply exists the last message is the user's; once it streams, wait for its first text
+  const lastMessage = messages.at(-1)
+  const isThinking =
+    status === "submitted" ||
+    (status === "streaming" &&
+      lastMessage?.role === "assistant" &&
+      !hasVisibleText(lastMessage))
 
   function onSubmit({ text }: PromptInputMessage) {
     if (!text.trim()) return
@@ -42,7 +84,8 @@ export function Chat({ chatId }: { chatId: string }) {
     <div data-slot="chat" className="flex min-h-0 flex-1 flex-col">
       <Conversation>
         <ConversationContent className="mx-auto w-full max-w-3xl">
-          {messages.map((message) => (
+          {/* A reply stopped before it said anything has no text; don't leave an empty bubble */}
+          {messages.filter(hasVisibleText).map((message) => (
             <Message key={message.id} from={message.role}>
               <MessageContent>
                 {message.parts.map((part, index) =>
@@ -53,6 +96,14 @@ export function Chat({ chatId }: { chatId: string }) {
               </MessageContent>
             </Message>
           ))}
+          {isThinking && (
+            <Message from="assistant">
+              <MessageContent className="flex-row items-center gap-2">
+                <Spinner className="text-muted-foreground" />
+                <span className="text-muted-foreground">Thinking…</span>
+              </MessageContent>
+            </Message>
+          )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>

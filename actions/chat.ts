@@ -15,6 +15,7 @@ import {
 } from "@/db/schema"
 import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { getBotDesktopUrl } from "@/lib/daytona"
+import { events, identifyUser } from "@/lib/log"
 import { memberEventMessage } from "@/lib/member-events"
 import { getUsage, USAGE_LIMIT_ERROR } from "@/lib/usage"
 import { getChat } from "@/queries/chats"
@@ -24,7 +25,9 @@ export async function createGroupChat(values: GroupChatInsert) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
   if (!hasFeature(has, "bots")) {
+    events.paywallHit("bots", "createGroupChat")
     throw new Error(UPGRADE_REQUIRED)
   }
 
@@ -54,6 +57,7 @@ export async function createGroupChat(values: GroupChatInsert) {
     return chat
   })
 
+  events.groupChatCreated(chat.id, botIds.length)
   revalidatePath("/", "layout")
 
   return chat
@@ -64,7 +68,9 @@ export async function updateGroupChat(chatId: string, values: GroupChatInsert) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
   if (!hasFeature(has, "bots")) {
+    events.paywallHit("bots", "updateGroupChat")
     throw new Error(UPGRADE_REQUIRED)
   }
 
@@ -81,7 +87,7 @@ export async function updateGroupChat(chatId: string, values: GroupChatInsert) {
   }
 
   // The name and the members, all or none
-  const chat = await db.transaction(async (tx) => {
+  const updated = await db.transaction(async (tx) => {
     // Also the ownership check: someone else's chat, or a direct chat, updates nothing
     const [chat] = await tx
       .update(chats)
@@ -138,21 +144,26 @@ export async function updateGroupChat(chatId: string, values: GroupChatInsert) {
             )
         ).map((bot) => [bot.id, bot.name])
       )
-      const events = changed.flatMap(({ botId, event }) => {
+      const eventLines = changed.flatMap(({ botId, event }) => {
         const name = names.get(botId)
         return name ? [memberEventMessage(chat.id, { botId, name, event })] : []
       })
-      if (events.length > 0) {
-        await tx.insert(messages).values(events)
+      if (eventLines.length > 0) {
+        await tx.insert(messages).values(eventLines)
       }
     }
 
-    return chat
+    return { chat, joined: joined.length, removed: removed.length }
   })
 
+  events.groupChatUpdated(updated.chat.id, {
+    memberCount: botIds.length,
+    joined: updated.joined,
+    removed: updated.removed,
+  })
   revalidatePath("/", "layout")
 
-  return chat
+  return updated.chat
 }
 
 // Members and messages go with the chat (cascade); the bots and their sandboxes stay
@@ -161,6 +172,7 @@ export async function deleteGroupChat(chatId: string) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
 
   const [chat] = await db
     .delete(chats)
@@ -176,6 +188,7 @@ export async function deleteGroupChat(chatId: string) {
     throw new Error("Chat not found")
   }
 
+  events.groupChatDeleted(chat.id)
   revalidatePath("/", "layout")
 }
 
@@ -185,12 +198,15 @@ export async function getDesktopUrl(chatId: string) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
   if (!hasFeature(has, "sandboxes")) {
+    events.paywallHit("sandboxes", "getDesktopUrl")
     throw new Error(UPGRADE_REQUIRED)
   }
   // The desktop runs the sandbox, so it needs sandbox time left
   const usage = await getUsage(userId)
   if (!usage || usage.remaining.sandbox <= 0) {
+    events.usageLimitHit("sandbox", "getDesktopUrl")
     throw new Error(USAGE_LIMIT_ERROR)
   }
 

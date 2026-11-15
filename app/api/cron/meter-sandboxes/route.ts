@@ -5,6 +5,7 @@ import { inArray } from "drizzle-orm"
 import { db } from "@/db"
 import { bots } from "@/db/schema"
 import { listRunningSandboxIds, stopSandbox } from "@/lib/daytona"
+import { events, logError } from "@/lib/log"
 import { getUsage, recordUsage } from "@/lib/usage"
 
 // Run every 5 minutes; each run charges every running sandbox one interval
@@ -22,11 +23,6 @@ function isAuthorized(req: Request) {
   return timingSafeEqual(digest(header), digest(`Bearer ${secret}`))
 }
 
-// Only the error's kind: messages can carry sandbox ids or URLs
-function logError(context: string, error: unknown) {
-  console.error(context, error instanceof Error ? error.name : typeof error)
-}
-
 // Called by a scheduler, not a person: no Clerk session, only the secret
 export async function POST(req: Request) {
   if (!isAuthorized(req)) {
@@ -35,7 +31,9 @@ export async function POST(req: Request) {
 
   // Next's default handler would log the whole error
   try {
-    return Response.json(await meterSandboxes())
+    const counts = await meterSandboxes()
+    events.cronRun("meter-sandboxes", counts)
+    return Response.json(counts)
   } catch (error) {
     logError("Metering sandboxes failed", error)
     return new Response("Internal server error", { status: 500 })

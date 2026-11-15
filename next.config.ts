@@ -1,3 +1,4 @@
+import { withSentryConfig } from "@sentry/nextjs/config"
 import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
@@ -6,4 +7,14 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@daytona/sdk"],
 }
 
-export default nextConfig
+// Without SENTRY_AUTH_TOKEN no source maps are uploaded; without
+// NEXT_PUBLIC_SENTRY_DSN the SDK is never initialized (see the sentry configs)
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  // Browser events go through the app, so ad blockers don't drop them.
+  // A fixed path, because proxy.ts must exclude it from its matcher.
+  tunnelRoute: "/monitoring",
+  silent: !process.env.CI,
+})

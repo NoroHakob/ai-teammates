@@ -15,6 +15,7 @@ import {
 } from "@/db/schema"
 import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { deleteSandbox } from "@/lib/daytona"
+import { events, identifyUser, logError } from "@/lib/log"
 import { memberEventMessage } from "@/lib/member-events"
 import { getUsage, USAGE_LIMIT_ERROR } from "@/lib/usage"
 
@@ -23,13 +24,21 @@ export async function createBot(values: BotInsert) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
   // A bot comes with its own sandbox, so it needs both; editing and deleting stay free
-  if (!hasFeature(has, "bots") || !hasFeature(has, "sandboxes")) {
-    throw new Error(UPGRADE_REQUIRED)
+  for (const feature of ["bots", "sandboxes"] as const) {
+    if (!hasFeature(has, feature)) {
+      events.paywallHit(feature, "createBot")
+      throw new Error(UPGRADE_REQUIRED)
+    }
   }
   // A new bot is only useful with AI budget and sandbox time left to use it
   const usage = await getUsage(userId)
   if (!usage || usage.remaining.ai <= 0 || usage.remaining.sandbox <= 0) {
+    events.usageLimitHit(
+      usage && usage.remaining.ai > 0 ? "sandbox" : "ai",
+      "createBot"
+    )
     throw new Error(USAGE_LIMIT_ERROR)
   }
 
@@ -52,6 +61,7 @@ export async function createBot(values: BotInsert) {
     return bot
   })
 
+  events.botCreated(bot.id)
   revalidatePath("/")
 
   return bot
@@ -86,6 +96,7 @@ export async function deleteBot(botId: string) {
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
+  identifyUser(userId)
 
   const [owned] = await db
     .select({ sandboxId: bots.sandboxId })
@@ -167,12 +178,10 @@ export async function deleteBot(botId: string) {
     try {
       await deleteSandbox(deleted.sandboxId)
     } catch (error) {
-      console.error(
-        "Failed to delete sandbox",
-        error instanceof Error ? error.name : typeof error
-      )
+      logError("Failed to delete sandbox", error)
     }
   }
 
+  events.botDeleted(deleted.id)
   revalidatePath("/", "layout")
 }

@@ -1,6 +1,5 @@
 import { auth } from "@clerk/nextjs/server"
 import {
-  APICallError,
   convertToModelMessages,
   createUIMessageStreamResponse,
   generateId,
@@ -19,6 +18,7 @@ import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
 import { featureReasons, hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { createHandoffTool, type Handoff } from "@/lib/handoff-tool"
+import { events, identifyUser, logError } from "@/lib/log"
 import { withoutNamePrefixes } from "@/lib/name-prefix"
 import { chatModelCost } from "@/lib/model-pricing"
 import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
@@ -152,31 +152,15 @@ function withoutViewScreenImages(parts: ChatUIMessage["parts"]) {
   )
 }
 
-// Errors from the database or the provider can carry message text, so only log what kind of error it was.
-// For provider errors also log the status and OpenAI's error code/type, never the message or body.
-function logError(context: string, error: unknown) {
-  const cause =
-    error instanceof Error && "lastError" in error ? error.lastError : error
-  if (APICallError.isInstance(cause)) {
-    const data = cause.data as
-      { error?: { code?: unknown; type?: unknown } } | undefined
-    console.error(context, cause.name, {
-      statusCode: cause.statusCode,
-      code: data?.error?.code,
-      type: data?.error?.type,
-    })
-    return
-  }
-  console.error(context, error instanceof Error ? error.name : typeof error)
-}
-
 export async function POST(req: Request) {
   const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     return new Response("Unauthorized", { status: 401 })
   }
+  identifyUser(userId)
   // Before anything is read or saved; the client turns this into the paywall
   if (!hasFeature(has, "bots")) {
+    events.paywallHit("bots", "chat")
     return new Response(UPGRADE_REQUIRED, { status: 402 })
   }
   const canUseSandboxes = hasFeature(has, "sandboxes")
@@ -190,6 +174,7 @@ export async function POST(req: Request) {
     return new Response("Internal server error", { status: 500 })
   }
   if (!usage || usage.remaining.ai <= 0) {
+    events.usageLimitHit("ai", "chat")
     return new Response(USAGE_LIMIT_ERROR, { status: 402 })
   }
   const aiBudget = usage.remaining.ai
@@ -201,8 +186,14 @@ export async function POST(req: Request) {
   }
   // The closures below don't keep the isAuthenticated narrowing
   const payerId = userId
+  // Reported once per reply, not on every tool call that is refused
+  let reportedSandboxRefusal = false
   async function checkSandboxAccess() {
     if (!canUseSandboxes) {
+      if (!reportedSandboxRefusal) {
+        reportedSandboxRefusal = true
+        events.paywallHit("sandboxes", "chat")
+      }
       throw new Error(featureReasons.sandboxes)
     }
     if (Date.now() - sandboxCheck.at >= SANDBOX_CHECK_TTL_MS) {
@@ -220,6 +211,10 @@ export async function POST(req: Request) {
       }
     }
     if (!sandboxCheck.allowed) {
+      if (!reportedSandboxRefusal) {
+        reportedSandboxRefusal = true
+        events.usageLimitHit("sandbox", "chat")
+      }
       throw new Error(SANDBOX_HOURS_USED_UP)
     }
   }
@@ -328,6 +323,7 @@ export async function POST(req: Request) {
             )
           }
           held.add(target.id)
+          events.handoff(chat.id, current.id, target.id)
           current = target
           return { botId: target.id, name: target.name }
         }),

@@ -3,6 +3,7 @@ import { shadcn } from "@clerk/ui/themes"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import "./globals.css"
+import { SentryUser } from "@/components/sentry-user"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from "@/components/ui/toast"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -33,6 +34,7 @@ export default function RootLayout({
     >
       <body>
         <ClerkProvider appearance={{ theme: shadcn }}>
+          <SentryUser />
           <ThemeProvider>
             <TooltipProvider>{children}</TooltipProvider>
             <Toaster />

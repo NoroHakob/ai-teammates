@@ -104,3 +104,21 @@ thing:
 Only JavaScript and the HTTP API have a pre-10 form. The other six cores were
 released in 2026 and never had one, so any older-looking PHP, Python, Rust, Go,
 Dart or C# API attributed to DiceBear is invented rather than outdated.
+
+## Sentry
+
+`@sentry/nextjs` reports errors, traces, replays and structured logs. Config: `instrumentation.ts`, `instrumentation-client.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`, `app/global-error.tsx`, `withSentryConfig` in `next.config.ts`. The privacy rules all runtimes share live in `lib/sentry-privacy.ts`.
+
+Environment variables (all optional):
+
+    NEXT_PUBLIC_SENTRY_DSN   Without it Sentry is never initialized and nothing is sent
+    SENTRY_ORG               Source map upload
+    SENTRY_PROJECT           Source map upload
+    SENTRY_AUTH_TOKEN        Source map upload; without it no source maps are uploaded
+
+Browser events go through the tunnel route `/monitoring`; keep it excluded from the matcher in `proxy.ts`.
+
+- Report server errors with `logError(context, error)` from `lib/log.ts`, never `console.error` with the error or `Sentry.captureException` directly. It sends only the error's kind, its stack and safe tags, never the message.
+- Report business events through `events` in `lib/log.ts` with ids and counts only. Never prompts, notes, memory, bot instructions, file contents, sandbox ids or URLs.
+- Call `identifyUser(userId)` after `auth()` in actions and routes. The Clerk user id is the only user data Sentry gets.
+- Don't forward console output to Sentry and don't turn on any data collection (`dataCollection`, AI `recordInputs`/`recordOutputs`, request bodies, headers, cookies, local variables).

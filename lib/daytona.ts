@@ -5,6 +5,7 @@ import { and, eq, isNull } from "drizzle-orm"
 
 import { db } from "@/db"
 import { bots } from "@/db/schema"
+import { logError } from "@/lib/log"
 
 // One client per server process; the key never leaves this module
 const globalForDaytona = globalThis as unknown as { daytona?: Daytona }
@@ -46,7 +47,9 @@ export async function createSandbox(botId: string) {
   try {
     await runShell(sandbox, `touch ${MEMORY_PATH}`)
   } catch (error) {
-    await deleteSandbox(sandbox.id).catch(() => {})
+    await deleteSandbox(sandbox.id).catch((cleanupError) =>
+      logError("Failed to delete sandbox", cleanupError)
+    )
     throw error
   }
   return sandbox
@@ -199,7 +202,9 @@ export async function ensureBotSandbox(botId: string): Promise<string> {
       .where(and(eq(bots.id, botId), isNull(bots.sandboxId)))
       .returning({ sandboxId: bots.sandboxId })
   } catch (error) {
-    await deleteSandbox(sandbox.id).catch(() => {})
+    await deleteSandbox(sandbox.id).catch((cleanupError) =>
+      logError("Failed to delete sandbox", cleanupError)
+    )
     throw error
   }
   if (claimed) {

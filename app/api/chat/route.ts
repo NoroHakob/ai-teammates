@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db"
 import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
+import { createHandoffTool, type Handoff } from "@/lib/handoff-tool"
 import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
@@ -93,27 +94,45 @@ function withoutOldScreenshots(messages: ModelMessage[]): ModelMessage[] {
 }
 
 // In a group chat the model can't tell its teammates' replies from its own,
-// so each earlier reply says who wrote it
+// so each earlier reply says who wrote it. A reply starts with the bot it was
+// addressed to (metadata.botId) and changes author at each completed handoff,
+// so every stretch of text after one gets its own name.
 function withAuthorNames(
   messages: ChatUIMessage[],
   nameOf: (botId: string | undefined) => string
 ): ChatUIMessage[] {
   return messages.map((message) => {
     if (message.role !== "assistant") return message
-    const first = message.parts.findIndex((part) => part.type === "text")
-    if (first === -1) return message
+    let author = message.metadata?.botId
+    let needsName = true
     return {
       ...message,
-      parts: message.parts.map((part, index) =>
-        index === first && part.type === "text"
-          ? {
-              ...part,
-              text: `[${nameOf(message.metadata?.botId)}] ${part.text}`,
-            }
-          : part
-      ),
+      parts: message.parts.map((part) => {
+        if (part.type === "tool-handoff" && part.state === "output-available") {
+          author = part.output.botId
+          needsName = true
+          return part
+        }
+        if (part.type === "text" && needsName && part.text.trim() !== "") {
+          needsName = false
+          return { ...part, text: `[${nameOf(author)}] ${part.text}` }
+        }
+        return part
+      }),
     }
   })
+}
+
+// Every handoff that went through, in order. Failed ones are tool errors, not
+// results. The output comes from our own execute, never from the model.
+function completedHandoffs(
+  steps: { staticToolResults: { toolName: string; output: unknown }[] }[]
+): Handoff[] {
+  return steps.flatMap((step) =>
+    step.staticToolResults.flatMap((result) =>
+      result.toolName === "handoff" ? [result.output as Handoff] : []
+    )
+  )
 }
 
 // The model's own screenshots aren't shown to the person, so don't keep their pixels
@@ -219,7 +238,33 @@ export async function POST(req: Request) {
   // A retried send reuses the stored message instead of appending it twice
   const alreadyStored = previousMessages.some((m) => m.id === newMessage.id)
 
-  const tools = createSandboxTools(bot.id)
+  // Who is answering: the addressed bot, until it hands the request off.
+  // held: every bot that already had this request, so it can't bounce back.
+  let current = bot
+  const held = new Set([bot.id])
+
+  // The sandbox, desktop and memory tools always act for the current bot
+  const sandboxTools = createSandboxTools(() => current.id)
+  const tools = isGroup
+    ? {
+        ...sandboxTools,
+        // Only members of this chat, from the server's data; the model's id is just a lookup key
+        handoff: createHandoffTool((targetId) => {
+          const target = chat.bots.find((member) => member.id === targetId)
+          if (!target) {
+            throw new Error("No teammate in this chat has that id.")
+          }
+          if (held.has(target.id)) {
+            throw new Error(
+              `${target.name} already had this request. Answer it yourself.`
+            )
+          }
+          held.add(target.id)
+          current = target
+          return { botId: target.id, name: target.name }
+        }),
+      }
+    : sandboxTools
 
   let validatedMessages: ChatUIMessage[]
   try {
@@ -244,33 +289,47 @@ export async function POST(req: Request) {
     return new Response("Internal server error", { status: 500 })
   }
 
-  const teammates = chat.bots.filter((member) => member.id !== bot.id)
+  type ChatBot = (typeof chat.bots)[number]
 
-  const system = [
-    `You are ${bot.name}. Your job: ${bot.job}.`,
-    bot.instructions && `How you should work: ${bot.instructions}`,
-    isGroup &&
+  // handedOverBy: the teammate who handed this request to speaker, if any
+  const instructionsFor = (speaker: ChatBot, handedOverBy?: ChatBot) => {
+    const teammates = chat.bots.filter((member) => member.id !== speaker.id)
+    return [
+      `You are ${speaker.name}. Your job: ${speaker.job}.`,
+      speaker.instructions && `How you should work: ${speaker.instructions}`,
+      isGroup &&
+        [
+          `This is the group chat "${chat.name ?? speaker.name}".`,
+          `Your teammates here:\n${teammates.map((teammate) => `- ${teammate.name} (id: ${teammate.id}): ${teammate.job}`).join("\n")}`,
+          "Earlier replies may come from teammates; each stretch of a reply starts with its author's name in brackets.",
+          handedOverBy
+            ? `The person addressed their latest message to ${handedOverBy.name}, who handed it to you with the handoff tool; their note is in that call. Take it over and answer as yourself, and don't start your reply with your name.`
+            : "The person addressed this message to you, so answer as yourself and don't start your reply with your name.",
+          "If the request belongs to a teammate's job rather than yours, call handoff with their id instead of answering.",
+          "Do not hand off what you can do well yourself. Never pass a request back to a teammate who handed it to you.",
+        ].join("\n"),
       [
-        `This is the group chat "${chat.name ?? bot.name}".`,
-        `Your teammates here: ${teammates.map((teammate) => `${teammate.name} (${teammate.job})`).join(", ")}.`,
-        "Earlier replies may come from teammates; each reply starts with its author's name in brackets.",
-        "The person addressed this message to you, so answer as yourself and don't start your reply with your name.",
+        "You talk with people in several conversations, and you only know about the others through your memory.",
+        "Call recall before answering anything that could depend on another conversation, and before saying you don't know something.",
+        "When you learn something that will be useful later, or the person asks you to remember something, call remember in the same turn.",
+        "Never store secrets, tokens or passwords.",
       ].join(" "),
-    [
-      "You have your own isolated Linux sandbox. Files you create there persist between conversations. It also has a 1024x768 desktop.",
-      "Prefer the shell and file tools; use the desktop only when the task needs a screen.",
-      "Call viewScreen before and after desktop actions so you know what is on the screen.",
-      "Call showScreen only when the person asks to see the screen.",
-      "Do the work with your tools instead of describing what you would do.",
-      "If something fails, say so plainly.",
-    ].join(" "),
-  ]
-    .filter(Boolean)
-    .join("\n\n")
+      [
+        "You have your own isolated Linux sandbox. Files you create there persist between conversations. It also has a 1024x768 desktop.",
+        "Prefer the shell and file tools; use the desktop only when the task needs a screen.",
+        "Call viewScreen before and after desktop actions so you know what is on the screen.",
+        "Call showScreen only when the person asks to see the screen.",
+        "Do the work with your tools instead of describing what you would do.",
+        "If something fails, say so plainly.",
+      ].join(" "),
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+  }
 
   const result = streamText({
     model: chatModel,
-    system,
+    instructions: instructionsFor(bot),
     // Past reasoning is optional for OpenAI and a reasoning item without its
     // following output is rejected, so the model only sees earlier text and tool calls
     messages: withoutOldScreenshots(
@@ -298,6 +357,19 @@ export async function POST(req: Request) {
       )
     ),
     tools,
+    // After a handoff the next steps speak as the teammate who took over
+    prepareStep: ({ steps }) => {
+      const handoffs = completedHandoffs(steps)
+      const last = handoffs.at(-1)
+      if (!last) return undefined
+      const speaker = chat.bots.find((member) => member.id === last.botId)
+      const previous = handoffs.at(-2)
+      const handedOverBy = previous
+        ? chat.bots.find((member) => member.id === previous.botId)
+        : bot
+      if (!speaker) return undefined
+      return { instructions: instructionsFor(speaker, handedOverBy) }
+    },
     // Each step is a model call; cap the cost of one reply
     stopWhen: stepCountIs(20),
     abortSignal: req.signal,

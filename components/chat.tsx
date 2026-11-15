@@ -54,11 +54,31 @@ function isToolPart(part: ChatPart): part is ChatToolPart {
 }
 
 // Something to show: text it said or a tool it used
-function isVisible(message: ChatUIMessage) {
-  return message.parts.some(
+function hasVisibleParts(parts: ChatPart[]) {
+  return parts.some(
     (part) =>
       (part.type === "text" && part.text.trim() !== "") || isToolPart(part)
   )
+}
+
+function isVisible(message: ChatUIMessage) {
+  return hasVisibleParts(message.parts)
+}
+
+// One bot's stretch of a message
+type Segment = { botId: string | undefined; parts: ChatPart[] }
+
+// A group reply starts with the bot it was addressed to and passes to another
+// bot at each completed handoff, so each stretch gets its own byline
+function segmentsOf(message: ChatUIMessage): Segment[] {
+  const segments: Segment[] = [{ botId: message.metadata?.botId, parts: [] }]
+  for (const part of message.parts) {
+    segments.at(-1)!.parts.push(part)
+    if (part.type === "tool-handoff" && part.state === "output-available") {
+      segments.push({ botId: part.output.botId, parts: [] })
+    }
+  }
+  return segments
 }
 
 const toolTitles: Record<ChatToolPart["type"], string> = {
@@ -74,12 +94,16 @@ const toolTitles: Record<ChatToolPart["type"], string> = {
   "tool-keyboardPress": "Press key",
   "tool-viewScreen": "Look at screen",
   "tool-showScreen": "Show screen",
+  "tool-recall": "Recall",
+  "tool-remember": "Remember",
+  "tool-handoff": "Hand off",
 }
 
 function ToolPartView({ part }: { part: ChatToolPart }) {
   const hasOutput = part.state === "output-available"
   const errorText = part.state === "output-error" ? part.errorText : undefined
 
+  let title = toolTitles[part.type]
   let input = <ToolInput input={part.input} />
   let output: unknown = hasOutput ? part.output : undefined
 
@@ -122,15 +146,21 @@ function ToolPartView({ part }: { part: ChatToolPart }) {
         )
       }
       break
+    case "tool-handoff":
+      if (part.state === "output-available") {
+        title = `${title} → ${part.output.name}`
+        output = (
+          <p className="p-3 text-muted-foreground">
+            {part.output.name} took over.
+          </p>
+        )
+      }
+      break
   }
 
   return (
     <Tool defaultOpen={part.type === "tool-showScreen"}>
-      <ToolHeader
-        type={part.type}
-        state={part.state}
-        title={toolTitles[part.type]}
-      />
+      <ToolHeader type={part.type} state={part.state} title={title} />
       <ToolContent>
         {input}
         <ToolOutput output={output} errorText={errorText} />
@@ -199,17 +229,23 @@ export function Chat({
     },
   })
 
-  // Before the reply exists the last message is the user's; once it streams, wait for its first text or tool
+  // Before the reply exists the last message is the user's; once it streams,
+  // wait for its first text or tool, and again after each handoff
   const lastMessage = messages.at(-1)
+  const lastSegment =
+    lastMessage?.role === "assistant"
+      ? segmentsOf(lastMessage).at(-1)
+      : undefined
   const isThinking =
     status === "submitted" ||
     (status === "streaming" &&
-      lastMessage?.role === "assistant" &&
-      !isVisible(lastMessage))
+      lastSegment !== undefined &&
+      !hasVisibleParts(lastSegment.parts))
 
-  // The bot the latest message went to is the one replying
-  const lastUserBotId = messages.findLast((message) => message.role === "user")
-    ?.metadata?.botId
+  // The bot the latest message went to is the one replying, until it hands off
+  const replyingBotId =
+    lastSegment?.botId ??
+    messages.findLast((message) => message.role === "user")?.metadata?.botId
 
   function onSubmit({ text }: PromptInputMessage) {
     if (!text.trim()) return
@@ -225,38 +261,47 @@ export function Chat({
       <Conversation>
         <ConversationContent className="mx-auto w-full max-w-3xl">
           {/* A reply stopped before it said or did anything is empty; don't leave an empty bubble */}
-          {messages.filter(isVisible).map((message) => (
-            <Message key={message.id} from={message.role}>
-              {bots &&
-                (message.role === "assistant" ? (
-                  <BotByline
-                    bot={
-                      message.metadata?.botId
-                        ? botsById.get(message.metadata.botId)
-                        : undefined
-                    }
-                  />
-                ) : (
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    to {botName(message.metadata?.botId)}
-                  </span>
-                ))}
-              <MessageContent>
-                {message.parts.map((part, index) =>
-                  part.type === "text" ? (
-                    <MessageResponse key={index}>{part.text}</MessageResponse>
-                  ) : isToolPart(part) ? (
-                    <ToolPartView key={part.toolCallId} part={part} />
-                  ) : null
-                )}
-              </MessageContent>
-            </Message>
-          ))}
+          {messages.filter(isVisible).flatMap((message) =>
+            segmentsOf(message)
+              .filter((segment) => hasVisibleParts(segment.parts))
+              .map((segment, segmentIndex) => (
+                <Message
+                  key={`${message.id}-${segmentIndex}`}
+                  from={message.role}
+                >
+                  {bots &&
+                    (message.role === "assistant" ? (
+                      <BotByline
+                        bot={
+                          segment.botId
+                            ? botsById.get(segment.botId)
+                            : undefined
+                        }
+                      />
+                    ) : (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        to {botName(message.metadata?.botId)}
+                      </span>
+                    ))}
+                  <MessageContent>
+                    {segment.parts.map((part, index) =>
+                      part.type === "text" ? (
+                        <MessageResponse key={index}>
+                          {part.text}
+                        </MessageResponse>
+                      ) : isToolPart(part) ? (
+                        <ToolPartView key={part.toolCallId} part={part} />
+                      ) : null
+                    )}
+                  </MessageContent>
+                </Message>
+              ))
+          )}
           {isThinking && (
             <Message from="assistant">
               {bots && (
                 <BotByline
-                  bot={lastUserBotId ? botsById.get(lastUserBotId) : undefined}
+                  bot={replyingBotId ? botsById.get(replyingBotId) : undefined}
                 />
               )}
               <MessageContent className="flex-row items-center gap-2">

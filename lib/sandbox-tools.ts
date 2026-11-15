@@ -4,10 +4,17 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool, type InferUITools, type UIDataTypes, type UIMessage } from "ai"
 import { z } from "zod"
 
-import { getBotRunningSandbox } from "@/lib/daytona"
+import {
+  appendBotMemory,
+  getBotRunningSandbox,
+  readBotMemory,
+} from "@/lib/daytona"
+import type { HandoffTool } from "@/lib/handoff-tool"
 
 const MAX_TEXT_LENGTH = 20_000
 const MAX_LIST_ENTRIES = 1000
+const MAX_MEMORY_LENGTH = 20_000
+const MAX_MEMORY_NOTE_LENGTH = 2000
 
 function truncate(text: string) {
   if (text.length <= MAX_TEXT_LENGTH) return text
@@ -24,6 +31,25 @@ function memoize<T>(load: () => Promise<T>) {
     })
     return promise
   }
+}
+
+// memoize, once per key
+function memoizeBy<T>(load: (key: string) => Promise<T>) {
+  const loaders = new Map<string, () => Promise<T>>()
+  return (key: string) => {
+    let loader = loaders.get(key)
+    if (!loader) {
+      loader = memoize(() => load(key))
+      loaders.set(key, loader)
+    }
+    return loader()
+  }
+}
+
+// The newest notes are at the end, so keep those
+function truncateMemory(memory: string) {
+  if (memory.length <= MAX_MEMORY_LENGTH) return memory
+  return `…[${memory.length - MAX_MEMORY_LENGTH} older characters left out]\n${memory.slice(-MAX_MEMORY_LENGTH)}`
 }
 
 const coordinate = z.number().int().min(0)
@@ -55,18 +81,23 @@ function screenshotToModelOutput({ output }: { output: Screenshot }) {
   }
 }
 
-export function createSandboxTools(botId: string) {
-  const getSandbox = memoize(() => getBotRunningSandbox(botId))
+// getBotId: the bot that is answering right now. It can change during a reply
+// (a handoff in a group chat), and the tools then use the new bot's sandbox.
+export function createSandboxTools(getBotId: () => string) {
+  const sandboxOf = memoizeBy((botId) => getBotRunningSandbox(botId))
 
   // The desktop only runs when a desktop tool needs it
-  const getDesktop = memoize(async () => {
-    const sandbox = await getSandbox()
+  const desktopOf = memoizeBy(async (botId) => {
+    const sandbox = await sandboxOf(botId)
     const { status } = await sandbox.computerUse.getStatus()
     if (status !== "active") {
       await sandbox.computerUse.start()
     }
     return sandbox.computerUse
   })
+
+  const getSandbox = () => sandboxOf(getBotId())
+  const getDesktop = () => desktopOf(getBotId())
 
   async function takeScreenshot(sandbox: Sandbox): Promise<Screenshot> {
     const [shot, info] = await Promise.all([
@@ -90,11 +121,42 @@ export function createSandboxTools(botId: string) {
   }
 
   async function screenshot() {
-    await getDesktop()
-    return takeScreenshot(await getSandbox())
+    // Both from the same bot, even if a handoff happens meanwhile
+    const botId = getBotId()
+    await desktopOf(botId)
+    return takeScreenshot(await sandboxOf(botId))
   }
 
   return {
+    recall: tool({
+      description:
+        "Read your memory: the notes you saved with remember, from all your conversations.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const memory = await readBotMemory(await getSandbox())
+        return { memory: truncateMemory(memory) || "(Your memory is empty.)" }
+      },
+    }),
+
+    remember: tool({
+      description:
+        "Save a note to your memory so you can recall it in any later conversation. Never save secrets, tokens or passwords.",
+      inputSchema: z.object({
+        note: z
+          .string()
+          .trim()
+          .min(1)
+          .max(MAX_MEMORY_NOTE_LENGTH)
+          .describe("One self-contained fact or preference, a sentence or two"),
+      }),
+      execute: async ({ note }) => {
+        // One line per note, so the file stays a list
+        const line = `- ${note.replace(/\s+/g, " ")}\n`
+        await appendBotMemory(await getSandbox(), line)
+        return "Saved to memory."
+      },
+    }),
+
     bash: tool({
       description:
         "Run a shell command in your Linux sandbox and get its exit code and combined output.",
@@ -269,11 +331,14 @@ export function createSandboxTools(botId: string) {
 
 export type SandboxTools = ReturnType<typeof createSandboxTools>
 
+// Every tool a reply can use; handoff exists only in group chats
+export type ChatTools = SandboxTools & { handoff: HandoffTool }
+
 // The bot that wrote an assistant message, or that a user message was addressed to
 export type ChatMessageMetadata = { botId?: string }
 
 export type ChatUIMessage = UIMessage<
   ChatMessageMetadata,
   UIDataTypes,
-  InferUITools<SandboxTools>
+  InferUITools<ChatTools>
 >

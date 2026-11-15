@@ -37,11 +37,45 @@ export async function createSandbox(botId: string) {
   // The bot runs whatever the model decides, so the sandbox gets no env vars,
   // secrets or volumes: there must be nothing in it worth stealing.
   // Default snapshot and resources (the smallest), so computer use is available.
-  return getDaytona().create({
+  const sandbox = await getDaytona().create({
     labels: { botId },
     autoStopInterval: 15, // minutes idle before it stops
     autoArchiveInterval: 60 * 24, // minutes stopped before it is archived
   })
+  // A sandbox without its memory file is not ready; don't leave it behind
+  try {
+    await runShell(sandbox, `touch ${MEMORY_PATH}`)
+  } catch (error) {
+    await deleteSandbox(sandbox.id).catch(() => {})
+    throw error
+  }
+  return sandbox
+}
+
+// The bot's memory, shared by all its chats, in its sandbox home directory
+const MEMORY_PATH = '"$HOME/MEMORY.md"'
+
+// Fixed scripts only: the caller must never put model or user text in them,
+// since they are wrapped in single quotes for sh
+async function runShell(sandbox: Sandbox, script: string) {
+  const result = await sandbox.process.executeCommand(`sh -c '${script}'`)
+  if (result.exitCode !== 0) {
+    // The output can hold memory content, so it is not part of the error
+    throw new Error(`Sandbox command failed with exit code ${result.exitCode}`)
+  }
+  return result.result
+}
+
+// The bot's memory file; touch also creates it in sandboxes made before it existed
+export async function readBotMemory(sandbox: Sandbox): Promise<string> {
+  return runShell(sandbox, `touch ${MEMORY_PATH} && cat ${MEMORY_PATH}`)
+}
+
+// Appends rather than rewrites, so saves from chats running at the same time all survive.
+// The text goes in as base64, so it can never become part of the shell command.
+export async function appendBotMemory(sandbox: Sandbox, text: string) {
+  const encoded = Buffer.from(text, "utf8").toString("base64")
+  await runShell(sandbox, `echo ${encoded} | base64 -d >> ${MEMORY_PATH}`)
 }
 
 export async function getRunningSandbox(sandboxId: string): Promise<Sandbox> {

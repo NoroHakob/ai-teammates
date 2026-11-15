@@ -58,6 +58,29 @@ export async function getRunningSandbox(sandboxId: string): Promise<Sandbox> {
   return sandbox
 }
 
+// The bot's sandbox, started, creating it the first time it is needed.
+// A sandbox deleted outside the app (e.g. from the Daytona dashboard) is
+// forgotten and replaced once. Callers must have checked that the bot
+// belongs to the signed-in user.
+export async function getBotRunningSandbox(botId: string): Promise<Sandbox> {
+  const sandboxId = await ensureBotSandbox(botId)
+  try {
+    return await getRunningSandbox(sandboxId)
+  } catch (error) {
+    if (!(error instanceof DaytonaNotFoundError)) throw error
+  }
+
+  // Only clear the ID we found missing: if another request already replaced
+  // it, this does nothing and ensureBotSandbox returns the replacement.
+  // Requests recovering at the same time race in ensureBotSandbox as usual.
+  await db
+    .update(bots)
+    .set({ sandboxId: null })
+    .where(and(eq(bots.id, botId), eq(bots.sandboxId, sandboxId)))
+
+  return getRunningSandbox(await ensureBotSandbox(botId))
+}
+
 // noVNC (websockify) inside the default image
 const NOVNC_PORT = 6080
 const DESKTOP_URL_TTL_SECONDS = 60 * 60
@@ -65,7 +88,7 @@ const DESKTOP_URL_TTL_SECONDS = 60 * 60
 // A websocket URL for the bot's desktop, for a noVNC client in the browser.
 // The URL itself is the credential (signed, one port, 1 hour): never log it.
 export async function getBotDesktopUrl(botId: string): Promise<string> {
-  const sandbox = await getRunningSandbox(await ensureBotSandbox(botId))
+  const sandbox = await getBotRunningSandbox(botId)
   const { status } = await sandbox.computerUse.getStatus()
   if (status !== "active") {
     await sandbox.computerUse.start()

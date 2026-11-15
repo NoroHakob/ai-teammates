@@ -4,6 +4,7 @@ import { useState } from "react"
 import { PlusIcon, UsersIcon } from "lucide-react"
 
 import { BotDialog } from "@/components/bot-dialog"
+import { GroupChatDialog } from "@/components/group-chat-dialog"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -12,9 +13,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import type { Bot } from "@/db/schema"
 
-export function CreateMenu() {
+export function CreateMenu({ bots }: { bots: Bot[] }) {
   const [botDialogOpen, setBotDialogOpen] = useState(false)
+  const [groupChatDialogOpen, setGroupChatDialogOpen] = useState(false)
 
   return (
     <>
@@ -30,7 +33,7 @@ export function CreateMenu() {
               <PlusIcon />
               Create new bot
             </DropdownMenuItem>
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setGroupChatDialogOpen(true)}>
               <UsersIcon />
               Create group chat
             </DropdownMenuItem>
@@ -38,6 +41,11 @@ export function CreateMenu() {
         </DropdownMenuContent>
       </DropdownMenu>
       <BotDialog open={botDialogOpen} onOpenChange={setBotDialogOpen} />
+      <GroupChatDialog
+        bots={bots}
+        open={groupChatDialogOpen}
+        onOpenChange={setGroupChatDialogOpen}
+      />
     </>
   )
 }

@@ -36,7 +36,8 @@ function previewOf(parts: UIMessage["parts"]) {
   return preview || null
 }
 
-async function saveMessage(chatId: string, message: UIMessage) {
+// botId: the bot that wrote an assistant message, or that a user message was addressed to
+async function saveMessage(chatId: string, message: UIMessage, botId: string) {
   if (message.role !== "user" && message.role !== "assistant") return
 
   await db
@@ -46,6 +47,7 @@ async function saveMessage(chatId: string, message: UIMessage) {
       chatId,
       role: message.role,
       parts: message.parts,
+      botId,
     })
     .onConflictDoNothing()
 
@@ -90,6 +92,30 @@ function withoutOldScreenshots(messages: ModelMessage[]): ModelMessage[] {
   )
 }
 
+// In a group chat the model can't tell its teammates' replies from its own,
+// so each earlier reply says who wrote it
+function withAuthorNames(
+  messages: ChatUIMessage[],
+  nameOf: (botId: string | undefined) => string
+): ChatUIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message
+    const first = message.parts.findIndex((part) => part.type === "text")
+    if (first === -1) return message
+    return {
+      ...message,
+      parts: message.parts.map((part, index) =>
+        index === first && part.type === "text"
+          ? {
+              ...part,
+              text: `[${nameOf(message.metadata?.botId)}] ${part.text}`,
+            }
+          : part
+      ),
+    }
+  })
+}
+
 // The model's own screenshots aren't shown to the person, so don't keep their pixels
 function withoutViewScreenImages(parts: ChatUIMessage["parts"]) {
   return parts.map((part) =>
@@ -123,16 +149,17 @@ export async function POST(req: Request) {
     return new Response("Unauthorized", { status: 401 })
   }
 
-  // The transport sends only { id, message }: the chat ID and the new user message.
+  // The transport sends only { id, message, botId }: the chat ID, the new user message
+  // and, in a group chat, the bot it is addressed to.
   // The history comes from the database, so the client can't rewrite it.
-  let body: { id?: unknown; message?: unknown }
+  let body: { id?: unknown; message?: unknown; botId?: unknown }
   try {
     body = await req.json()
   } catch {
     return new Response("Bad request", { status: 400 })
   }
 
-  const { id, message } = body
+  const { id, message, botId } = body
   if (
     typeof id !== "string" ||
     typeof message !== "object" ||
@@ -159,8 +186,8 @@ export async function POST(req: Request) {
     return new Response("Bad request", { status: 400 })
   }
 
-  const newMessage = message as UIMessage
-  if (textOf(newMessage.parts).length > MAX_MESSAGE_LENGTH) {
+  const parts = message.parts as UIMessage["parts"]
+  if (textOf(parts).length > MAX_MESSAGE_LENGTH) {
     return new Response("Message too long", { status: 400 })
   }
 
@@ -171,10 +198,27 @@ export async function POST(req: Request) {
     return new Response("Not found", { status: 404 })
   }
 
+  // A group chat names the bot that should answer, and it must be a member;
+  // a direct chat has one bot and ignores botId
+  const isGroup = chat.kind === "group"
+  const bot = isGroup
+    ? chat.bots.find((member) => member.id === botId)
+    : chat.bots[0]
+  if (!bot) {
+    return new Response("Bad request", { status: 400 })
+  }
+
+  // Rebuilt rather than trusted, so the client can't set its own metadata
+  const newMessage: ChatUIMessage = {
+    id: message.id,
+    role: "user",
+    parts: parts as ChatUIMessage["parts"],
+    metadata: { botId: bot.id },
+  }
+
   // A retried send reuses the stored message instead of appending it twice
   const alreadyStored = previousMessages.some((m) => m.id === newMessage.id)
 
-  const { bot } = chat
   const tools = createSandboxTools(bot.id)
 
   let validatedMessages: ChatUIMessage[]
@@ -194,15 +238,24 @@ export async function POST(req: Request) {
 
   // Save the user message before replying, so it survives a failed reply
   try {
-    await saveMessage(chat.id, validatedMessages.at(-1)!)
+    await saveMessage(chat.id, validatedMessages.at(-1)!, bot.id)
   } catch (error) {
     logError("Failed to save user message", error)
     return new Response("Internal server error", { status: 500 })
   }
 
+  const teammates = chat.bots.filter((member) => member.id !== bot.id)
+
   const system = [
     `You are ${bot.name}. Your job: ${bot.job}.`,
     bot.instructions && `How you should work: ${bot.instructions}`,
+    isGroup &&
+      [
+        `This is the group chat "${chat.name ?? bot.name}".`,
+        `Your teammates here: ${teammates.map((teammate) => `${teammate.name} (${teammate.job})`).join(", ")}.`,
+        "Earlier replies may come from teammates; each reply starts with its author's name in brackets.",
+        "The person addressed this message to you, so answer as yourself and don't start your reply with your name.",
+      ].join(" "),
     [
       "You have your own isolated Linux sandbox. Files you create there persist between conversations. It also has a 1024x768 desktop.",
       "Prefer the shell and file tools; use the desktop only when the task needs a screen.",
@@ -222,7 +275,15 @@ export async function POST(req: Request) {
     // following output is rejected, so the model only sees earlier text and tool calls
     messages: withoutOldScreenshots(
       await convertToModelMessages(
-        validatedMessages.map((message) =>
+        (isGroup
+          ? withAuthorNames(validatedMessages, (authorId) =>
+              authorId === undefined
+                ? "Someone"
+                : (chat.bots.find((member) => member.id === authorId)?.name ??
+                  "Someone")
+            )
+          : validatedMessages
+        ).map((message) =>
           message.role === "assistant"
             ? {
                 ...message,
@@ -250,6 +311,9 @@ export async function POST(req: Request) {
       tools,
       originalMessages: validatedMessages,
       generateMessageId: generateId,
+      // Tells the client which bot is writing this reply
+      messageMetadata: ({ part }) =>
+        part.type === "start" ? { botId: bot.id } : undefined,
       // Runs on success, error and abort; keep whatever the bot managed to say and do
       onEnd: async ({ responseMessage, isAborted }) => {
         // A stopped reply's reasoning can be cut off and its last tool call may
@@ -271,7 +335,7 @@ export async function POST(req: Request) {
         if (!isWorthSaving(parts)) return
 
         try {
-          await saveMessage(chat.id, { ...responseMessage, parts })
+          await saveMessage(chat.id, { ...responseMessage, parts }, bot.id)
         } catch (error) {
           logError("Failed to save assistant message", error)
         }

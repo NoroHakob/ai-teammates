@@ -4,6 +4,7 @@ import { formatDistanceToNowStrict } from "date-fns"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatMenuButton } from "@/components/chat-menu-button"
 import { CreateMenu } from "@/components/create-menu"
+import { GroupChatAvatar } from "@/components/group-chat-avatar"
 import { SearchCommand, SearchCommandItem } from "@/components/search-command"
 import {
   Sidebar,
@@ -16,16 +17,29 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
-import { getChats } from "@/queries/bots"
+import { getBots, getChats, type ChatWithBots } from "@/queries/bots"
+
+// A direct chat is its bot; a group chat has its own name and all its bots' faces
+function chatName(chat: ChatWithBots) {
+  return chat.name ?? chat.bots[0].name
+}
+
+function ChatListAvatar({ chat }: { chat: ChatWithBots }) {
+  return chat.kind === "group" ? (
+    <GroupChatAvatar seeds={chat.bots.map((bot) => bot.avatar)} />
+  ) : (
+    <ChatAvatar seed={chat.bots[0].avatar} />
+  )
+}
 
 export async function AppSidebar() {
-  const chats = await getChats()
+  const [chats, bots] = await Promise.all([getChats(), getBots()])
 
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <div className="flex justify-end">
-          <CreateMenu />
+          <CreateMenu bots={bots} />
         </div>
         <SearchCommand>
           {chats.map((chat) => (
@@ -33,10 +47,10 @@ export async function AppSidebar() {
               key={chat.id}
               href={`/chats/${chat.id}`}
               value={chat.id}
-              keywords={[chat.name ?? chat.bot.name]}
+              keywords={[chatName(chat)]}
             >
-              <ChatAvatar seed={chat.bot.avatar} />
-              <span className="truncate">{chat.name ?? chat.bot.name}</span>
+              <ChatListAvatar chat={chat} />
+              <span className="truncate">{chatName(chat)}</span>
             </SearchCommandItem>
           ))}
         </SearchCommand>
@@ -47,15 +61,12 @@ export async function AppSidebar() {
             <SidebarMenu>
               {chats.map((chat) => (
                 <SidebarMenuItem key={chat.id}>
-                  <ChatMenuButton
-                    chatId={chat.id}
-                    tooltip={chat.name ?? chat.bot.name}
-                  >
-                    <ChatAvatar seed={chat.bot.avatar} />
+                  <ChatMenuButton chatId={chat.id} tooltip={chatName(chat)}>
+                    <ChatListAvatar chat={chat} />
                     <div className="grid flex-1 text-left leading-tight">
                       <div className="flex items-baseline gap-2">
                         <span className="truncate font-medium">
-                          {chat.name ?? chat.bot.name}
+                          {chatName(chat)}
                         </span>
                         <time
                           dateTime={chat.lastMessageAt.toISOString()}

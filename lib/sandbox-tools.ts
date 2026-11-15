@@ -4,7 +4,7 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool, type InferUITools, type UIDataTypes, type UIMessage } from "ai"
 import { z } from "zod"
 
-import { ensureBotSandbox, getRunningSandbox } from "@/lib/daytona"
+import { getBotRunningSandbox } from "@/lib/daytona"
 
 const MAX_TEXT_LENGTH = 20_000
 const MAX_LIST_ENTRIES = 1000
@@ -56,9 +56,7 @@ function screenshotToModelOutput({ output }: { output: Screenshot }) {
 }
 
 export function createSandboxTools(botId: string) {
-  const getSandbox = memoize(async () =>
-    getRunningSandbox(await ensureBotSandbox(botId))
-  )
+  const getSandbox = memoize(() => getBotRunningSandbox(botId))
 
   // The desktop only runs when a desktop tool needs it
   const getDesktop = memoize(async () => {
@@ -271,8 +269,11 @@ export function createSandboxTools(botId: string) {
 
 export type SandboxTools = ReturnType<typeof createSandboxTools>
 
+// The bot that wrote an assistant message, or that a user message was addressed to
+export type ChatMessageMetadata = { botId?: string }
+
 export type ChatUIMessage = UIMessage<
-  unknown,
+  ChatMessageMetadata,
   UIDataTypes,
   InferUITools<SandboxTools>
 >

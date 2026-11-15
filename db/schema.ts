@@ -11,7 +11,7 @@ import {
 import type { UIMessage } from "ai"
 import { createInsertSchema } from "drizzle-zod"
 import { nanoid } from "nanoid"
-import type { z } from "zod"
+import { z } from "zod"
 
 export const bots = pgTable(
   "bots",
@@ -85,6 +85,8 @@ export const messages = pgTable(
       .notNull()
       .references(() => chats.id, { onDelete: "cascade" }),
     role: messageRole().notNull(),
+    // The bot that wrote an assistant message, or that a user message was addressed to
+    botId: text().references(() => bots.id, { onDelete: "set null" }),
     // UIMessage parts
     parts: jsonb().$type<UIMessage["parts"]>().notNull(),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -96,6 +98,7 @@ export const messages = pgTable(
 
 export const botsRelations = relations(bots, ({ many }) => ({
   memberships: many(chatMembers),
+  messages: many(messages),
 }))
 
 export const chatsRelations = relations(chats, ({ many }) => ({
@@ -105,6 +108,7 @@ export const chatsRelations = relations(chats, ({ many }) => ({
 
 export const messagesRelations = relations(messages, ({ one }) => ({
   chat: one(chats, { fields: [messages.chatId], references: [chats.id] }),
+  bot: one(bots, { fields: [messages.botId], references: [bots.id] }),
 }))
 
 export const chatMembersRelations = relations(chatMembers, ({ one }) => ({
@@ -140,3 +144,26 @@ export const botInsertSchema = createInsertSchema(bots, {
 }).omit({ id: true, userId: true, sandboxId: true, createdAt: true })
 
 export type BotInsert = z.infer<typeof botInsertSchema>
+
+export const groupChatInsertSchema = createInsertSchema(chats, {
+  // A schema rather than a callback: drizzle-zod would make a callback on this
+  // nullable column nullable and optional, but a group always has a name
+  name: z
+    .string()
+    .trim()
+    .min(1, "Give the group a name.")
+    .max(50, "Keep it under 50 characters."),
+})
+  .omit({
+    id: true,
+    userId: true,
+    kind: true,
+    lastMessagePreview: true,
+    lastMessageAt: true,
+    createdAt: true,
+  })
+  .extend({
+    botIds: z.array(z.string()).min(2, "Pick at least two bots."),
+  })
+
+export type GroupChatInsert = z.infer<typeof groupChatInsertSchema>

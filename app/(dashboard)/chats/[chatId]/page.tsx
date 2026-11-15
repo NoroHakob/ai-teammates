@@ -5,7 +5,6 @@ import { Chat } from "@/components/chat"
 import { ChatHeader } from "@/components/chat-header"
 import { DesktopPanel, DesktopPanelProvider } from "@/components/desktop-panel"
 import { ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
-import type { ChatUIMessage } from "@/lib/sandbox-tools"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
 
@@ -23,6 +22,21 @@ export default async function ChatPage({
   const messages = await getMessages(chat.id)
   if (!messages) notFound()
 
+  // Several bots share a group chat, so there is no single desktop to show
+  if (chat.kind === "group") {
+    return (
+      <div className="flex h-svh flex-col">
+        <ChatHeader chat={chat} />
+        <Chat
+          key={chat.id}
+          chatId={chat.id}
+          bots={chat.bots.map(({ id, name, avatar }) => ({ id, name, avatar }))}
+          initialMessages={messages}
+        />
+      </div>
+    )
+  }
+
   return (
     <DesktopPanelProvider key={chat.id} chatId={chat.id}>
       <div className="h-svh">
@@ -30,17 +44,10 @@ export default async function ChatPage({
           <ResizablePanel id="chat" minSize="30%">
             <div className="flex h-full flex-col">
               <ChatHeader chat={chat} />
-              <Chat
-                key={chat.id}
-                chatId={chat.id}
-                initialMessages={
-                  // Assistant parts are only ever written by the chat route, with these tools
-                  messages as ChatUIMessage[]
-                }
-              />
+              <Chat key={chat.id} chatId={chat.id} initialMessages={messages} />
             </div>
           </ResizablePanel>
-          <DesktopPanel name={chat.bot.name} />
+          <DesktopPanel name={chat.bots[0].name} />
         </ResizablePanelGroup>
       </div>
     </DesktopPanelProvider>

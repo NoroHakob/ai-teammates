@@ -13,9 +13,12 @@ if (SENTRY_DSN) {
     dsn: SENTRY_DSN,
     tracesSampleRate,
     ...privacyOptions(true),
-    // Spans for the AI SDK and OpenAI calls, without their prompts or replies
-    integrations: [
-      Sentry.vercelAIIntegration({ recordInputs: false, recordOutputs: false }),
+    // No VercelAI integration, not even the default one: with ai v7 it swaps
+    // the model call's stream after the SDK has locked it, so every streamText
+    // with tools fails with "ReadableStream is locked" (a TypeError). The
+    // OpenAI calls still show up as fetch spans.
+    integrations: (defaults) => [
+      ...defaults.filter((integration) => integration.name !== "VercelAI"),
       Sentry.openAIIntegration({ recordInputs: false, recordOutputs: false }),
     ],
   })

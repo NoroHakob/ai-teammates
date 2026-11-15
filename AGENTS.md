@@ -121,6 +121,7 @@ Browser events go through the tunnel route `/monitoring`; keep it excluded from 
 - Report server errors with `logError(context, error)` from `lib/log.ts`, never `console.error` with the error or `Sentry.captureException` directly. It sends only the error's kind, its stack and safe tags, never the message.
 - Report business events through `events` in `lib/log.ts` with ids and counts only. Never prompts, notes, memory, bot instructions, file contents, sandbox ids or URLs.
 - Call `identifyUser(userId)` after `auth()` in actions and routes. The Clerk user id is the only user data Sentry gets.
+- Keep the `VercelAI` integration out of `sentry.server.config.ts` (it is on by default): with ai v7 it breaks every `streamText` call with tools ("ReadableStream is locked"). Recheck before re-enabling it after a Sentry upgrade.
 - Don't forward console output to Sentry and don't turn on any data collection (`dataCollection`, AI `recordInputs`/`recordOutputs`, request bodies, headers, cookies, local variables).
 
 ## Deployment

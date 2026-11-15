@@ -1,7 +1,7 @@
 import "server-only"
 
 import type { Sandbox } from "@daytona/sdk"
-import { tool, type InferUITools, type UIDataTypes, type UIMessage } from "ai"
+import { tool, type InferUITools, type UIMessage } from "ai"
 import { z } from "zod"
 
 import {
@@ -337,8 +337,18 @@ export type ChatTools = SandboxTools & { handoff: HandoffTool }
 // The bot that wrote an assistant message, or that a user message was addressed to
 export type ChatMessageMetadata = { botId?: string }
 
+// A bot joined, left or was deleted, shown as a line in a group chat (role "system").
+// The name is stored so the line still reads right after the bot is deleted.
+export type MemberEvent = {
+  botId: string
+  name: string
+  event: "joined" | "removed" | "deleted"
+}
+
+export type ChatDataTypes = { member: MemberEvent }
+
 export type ChatUIMessage = UIMessage<
   ChatMessageMetadata,
-  UIDataTypes,
+  ChatDataTypes,
   InferUITools<ChatTools>
 >

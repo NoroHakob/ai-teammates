@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useRouter } from "next/navigation"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { ChatAvatar } from "@/components/chat-avatar"
 import { CodeBlock } from "@/components/ai-elements/code-block"
@@ -42,7 +42,8 @@ import { SelectGroup } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import type { Bot } from "@/db/schema"
-import type { ChatUIMessage } from "@/lib/sandbox-tools"
+import { withoutNamePrefixes } from "@/lib/name-prefix"
+import type { ChatUIMessage, MemberEvent } from "@/lib/sandbox-tools"
 
 type ChatBot = Pick<Bot, "id" | "name" | "avatar">
 
@@ -61,8 +62,41 @@ function hasVisibleParts(parts: ChatPart[]) {
   )
 }
 
+// The event a system message is about (a bot joined, was removed or was deleted)
+function memberEventOf(message: ChatUIMessage): MemberEvent | undefined {
+  if (message.role !== "system") return undefined
+  const part = message.parts.find((part) => part.type === "data-member")
+  return part?.type === "data-member" ? part.data : undefined
+}
+
 function isVisible(message: ChatUIMessage) {
-  return hasVisibleParts(message.parts)
+  return memberEventOf(message) !== undefined || hasVisibleParts(message.parts)
+}
+
+const memberEventText: Record<MemberEvent["event"], string> = {
+  joined: "joined the chat",
+  removed: "was removed from the chat",
+  deleted: "was deleted",
+}
+
+// bot: the bot as it is now, if it still exists; its current name and face win
+// over the stored name. A deleted bot is shown by its stored name only.
+function MemberEventLine({
+  event,
+  bot,
+}: {
+  event: MemberEvent
+  bot: ChatBot | undefined
+}) {
+  const current = event.event === "deleted" ? undefined : bot
+  return (
+    <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+      {current && <ChatAvatar seed={current.avatar} className="size-4" />}
+      <span className="truncate">
+        {current?.name ?? event.name} {memberEventText[event.event]}
+      </span>
+    </div>
+  )
 }
 
 // One bot's stretch of a message
@@ -70,9 +104,14 @@ type Segment = { botId: string | undefined; parts: ChatPart[] }
 
 // A group reply starts with the bot it was addressed to and passes to another
 // bot at each completed handoff, so each stretch gets its own byline
-function segmentsOf(message: ChatUIMessage): Segment[] {
+// isGroup: group replies also lose a "[Name] " the model copied from the history
+function segmentsOf(message: ChatUIMessage, isGroup: boolean): Segment[] {
+  const parts =
+    isGroup && message.role === "assistant"
+      ? withoutNamePrefixes(message.parts)
+      : message.parts
   const segments: Segment[] = [{ botId: message.metadata?.botId, parts: [] }]
-  for (const part of message.parts) {
+  for (const part of parts) {
     segments.at(-1)!.parts.push(part)
     if (part.type === "tool-handoff" && part.state === "output-available") {
       segments.push({ botId: part.output.botId, parts: [] })
@@ -179,18 +218,23 @@ function BotByline({ bot }: { bot: ChatBot | undefined }) {
   )
 }
 
-// bots: only for group chats, where the person picks which bot gets each message
+// bots: only for group chats, the members the person picks from for each message.
+// knownBots: all of the user's bots, to name past replies from bots that left the group.
 export function Chat({
   chatId,
   bots,
+  knownBots,
   initialMessages,
 }: {
   chatId: string
   bots?: ChatBot[]
+  knownBots?: ChatBot[]
   initialMessages: ChatUIMessage[]
 }) {
   const router = useRouter()
-  const [botId, setBotId] = useState(() => bots?.[0]?.id)
+  const [pickedBotId, setPickedBotId] = useState(() => bots?.[0]?.id)
+  // The picked bot may have been removed from the group since
+  const botId = (bots?.find((bot) => bot.id === pickedBotId) ?? bots?.[0])?.id
   const [transport] = useState(
     () =>
       new DefaultChatTransport<ChatUIMessage>({
@@ -208,33 +252,56 @@ export function Chat({
       })
   )
 
-  const botsById = new Map(bots?.map((bot) => [bot.id, bot]))
+  const botsById = new Map(
+    [...(knownBots ?? []), ...(bots ?? [])].map((bot) => [bot.id, bot])
+  )
   const botName = (id: string | undefined) =>
     (id && botsById.get(id)?.name) || "Someone"
 
-  const { messages, sendMessage, status, stop } = useChat<ChatUIMessage>({
-    id: chatId,
-    messages: initialMessages,
-    transport,
-    onFinish: () => {
-      // Refresh the sidebar's preview and order
-      router.refresh()
-    },
-    onError: () => {
-      toast.add({
-        type: "error",
-        title: "Couldn't get a reply",
-        description: "Something went wrong. Try again.",
-      })
-    },
-  })
+  const { messages, setMessages, sendMessage, status, stop } =
+    useChat<ChatUIMessage>({
+      id: chatId,
+      messages: initialMessages,
+      transport,
+      onFinish: () => {
+        // Refresh the sidebar's preview and order
+        router.refresh()
+      },
+      onError: () => {
+        toast.add({
+          type: "error",
+          title: "Couldn't get a reply",
+          description: "Something went wrong. Try again.",
+        })
+      },
+    })
+
+  // useChat only reads initialMessages once. A refresh (after editing the
+  // group, or after a reply) brings the stored messages again, e.g. new member
+  // event lines, so take them over, but only between replies.
+  const statusRef = useRef(status)
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
+  useEffect(() => {
+    if (statusRef.current !== "ready") return
+    const stored = new Set(initialMessages.map((message) => message.id))
+    // The refresh after a reply can arrive before the server saved it; keep
+    // the client's messages until the stored ones include all of them.
+    // An empty stopped reply is never saved, so it doesn't count.
+    setMessages((current) =>
+      current.filter(isVisible).every((message) => stored.has(message.id))
+        ? initialMessages
+        : current
+    )
+  }, [initialMessages, setMessages])
 
   // Before the reply exists the last message is the user's; once it streams,
   // wait for its first text or tool, and again after each handoff
   const lastMessage = messages.at(-1)
   const lastSegment =
     lastMessage?.role === "assistant"
-      ? segmentsOf(lastMessage).at(-1)
+      ? segmentsOf(lastMessage, Boolean(bots)).at(-1)
       : undefined
   const isThinking =
     status === "submitted" ||
@@ -261,8 +328,18 @@ export function Chat({
       <Conversation>
         <ConversationContent className="mx-auto w-full max-w-3xl">
           {/* A reply stopped before it said or did anything is empty; don't leave an empty bubble */}
-          {messages.filter(isVisible).flatMap((message) =>
-            segmentsOf(message)
+          {messages.filter(isVisible).flatMap((message) => {
+            const memberEvent = memberEventOf(message)
+            if (memberEvent) {
+              return [
+                <MemberEventLine
+                  key={message.id}
+                  event={memberEvent}
+                  bot={botsById.get(memberEvent.botId)}
+                />,
+              ]
+            }
+            return segmentsOf(message, Boolean(bots))
               .filter((segment) => hasVisibleParts(segment.parts))
               .map((segment, segmentIndex) => (
                 <Message
@@ -296,7 +373,7 @@ export function Chat({
                   </MessageContent>
                 </Message>
               ))
-          )}
+          })}
           {isThinking && (
             <Message from="assistant">
               {bots && (
@@ -326,7 +403,7 @@ export function Chat({
                   }))}
                   value={botId}
                   onValueChange={(value) => {
-                    if (typeof value === "string") setBotId(value)
+                    if (typeof value === "string") setPickedBotId(value)
                   }}
                 >
                   <PromptInputSelectTrigger aria-label="Send to">

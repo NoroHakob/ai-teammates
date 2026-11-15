@@ -74,7 +74,12 @@ export const chatMembers = pgTable(
   ]
 )
 
-export const messageRole = pgEnum("message_role", ["user", "assistant"])
+// system: an event line in a group chat (a bot joined, was removed or was deleted)
+export const messageRole = pgEnum("message_role", [
+  "user",
+  "assistant",
+  "system",
+])
 
 export const messages = pgTable(
   "messages",
@@ -85,7 +90,8 @@ export const messages = pgTable(
       .notNull()
       .references(() => chats.id, { onDelete: "cascade" }),
     role: messageRole().notNull(),
-    // The bot that wrote an assistant message, or that a user message was addressed to
+    // The bot that wrote an assistant message, that a user message was addressed to,
+    // or that a system event is about
     botId: text().references(() => bots.id, { onDelete: "set null" }),
     // UIMessage parts
     parts: jsonb().$type<UIMessage["parts"]>().notNull(),

@@ -6,32 +6,47 @@ import { BotDialog } from "@/components/bot-dialog"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { useDesktopPanel } from "@/components/desktop-panel"
 import { GroupChatAvatar } from "@/components/group-chat-avatar"
+import { GroupChatDialog } from "@/components/group-chat-dialog"
 import { Button } from "@/components/ui/button"
+import type { Bot } from "@/db/schema"
 import type { ChatWithBots } from "@/queries/bots"
 
-export function ChatHeader({ chat }: { chat: ChatWithBots }) {
+// bots: all of the user's bots, so a group chat can add any of them
+export function ChatHeader({
+  chat,
+  bots = [],
+}: {
+  chat: ChatWithBots
+  bots?: Bot[]
+}) {
   return chat.kind === "group" ? (
-    <GroupChatHeader chat={chat} />
+    <GroupChatHeader chat={chat} bots={bots} />
   ) : (
     <DirectChatHeader chat={chat} />
   )
 }
 
-// Several bots, so no single bot to edit and no single desktop to show
-function GroupChatHeader({ chat }: { chat: ChatWithBots }) {
+// Several bots, so no single desktop to show; the title edits the group
+function GroupChatHeader({ chat, bots }: { chat: ChatWithBots; bots: Bot[] }) {
   return (
     <header
       data-slot="chat-header"
       className="flex h-12 shrink-0 items-center gap-2 border-b px-4"
     >
-      <h1 className="flex min-w-0 items-center gap-2">
-        <GroupChatAvatar
-          seeds={chat.bots.map((bot) => bot.avatar)}
-          className="size-6"
-        />
-        <span className="truncate text-sm font-medium">
-          {chat.name ?? chat.bots[0].name}
-        </span>
+      <h1 className="-ml-2 flex min-w-0">
+        <GroupChatDialog
+          bots={bots}
+          chat={chat}
+          trigger={
+            <Button variant="ghost" className="min-w-0 shrink gap-2 px-2" />
+          }
+        >
+          <GroupChatAvatar
+            seeds={chat.bots.map((bot) => bot.avatar)}
+            className="size-6"
+          />
+          <span className="truncate">{chat.name ?? chat.bots[0].name}</span>
+        </GroupChatDialog>
       </h1>
     </header>
   )

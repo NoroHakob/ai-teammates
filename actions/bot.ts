@@ -10,9 +10,11 @@ import {
   bots,
   chatMembers,
   chats,
+  messages,
   type BotInsert,
 } from "@/db/schema"
 import { deleteSandbox } from "@/lib/daytona"
+import { memberEventMessage } from "@/lib/member-events"
 
 export async function createBot(values: BotInsert) {
   const { isAuthenticated, userId } = await auth()
@@ -104,6 +106,37 @@ export async function deleteBot(botId: string) {
           )
         )
       )
+
+    // Group chats keep going without the bot, so they get a line saying it was deleted.
+    // Its botId turns null with the bot (on delete set null); the stored name stays.
+    const [named] = await tx
+      .select({ name: bots.name })
+      .from(bots)
+      .where(and(eq(bots.id, botId), eq(bots.userId, userId)))
+    const groups = named
+      ? await tx
+          .select({ id: chats.id })
+          .from(chats)
+          .innerJoin(chatMembers, eq(chatMembers.chatId, chats.id))
+          .where(
+            and(
+              eq(chats.userId, userId),
+              eq(chats.kind, "group"),
+              eq(chatMembers.botId, botId)
+            )
+          )
+      : []
+    if (named && groups.length > 0) {
+      await tx.insert(messages).values(
+        groups.map(({ id }) =>
+          memberEventMessage(id, {
+            botId,
+            name: named.name,
+            event: "deleted",
+          })
+        )
+      )
+    }
 
     const [bot] = await tx
       .delete(bots)

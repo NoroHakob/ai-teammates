@@ -25,7 +25,8 @@ export async function getMessages(
     .where(eq(messages.chatId, chat.id))
     .orderBy(asc(messages.createdAt))
 
-  // Assistant parts are only ever written by the chat route, with the sandbox tools
+  // Assistant parts are only ever written by the chat route, with the sandbox tools;
+  // system messages (member event lines) only by the chat and bot actions
   return rows.map(({ id, role, parts, botId }) => ({
     id,
     role,

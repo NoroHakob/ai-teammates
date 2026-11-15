@@ -18,6 +18,7 @@ import { db } from "@/db"
 import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
 import { createHandoffTool, type Handoff } from "@/lib/handoff-tool"
+import { withoutNamePrefixes } from "@/lib/name-prefix"
 import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
@@ -235,8 +236,20 @@ export async function POST(req: Request) {
     metadata: { botId: bot.id },
   }
 
-  // A retried send reuses the stored message instead of appending it twice
-  const alreadyStored = previousMessages.some((m) => m.id === newMessage.id)
+  // Member event lines are for the person; the instructions already list the
+  // current teammates, so the model never sees them
+  const history = previousMessages.filter((stored) => stored.role !== "system")
+
+  // A retried send reuses the stored message instead of appending it twice.
+  // An event line's id can't be reused for a user message.
+  if (
+    previousMessages.some(
+      (stored) => stored.id === newMessage.id && stored.role === "system"
+    )
+  ) {
+    return new Response("Bad request", { status: 400 })
+  }
+  const alreadyStored = history.some((m) => m.id === newMessage.id)
 
   // Who is answering: the addressed bot, until it hands the request off.
   // held: every bot that already had this request, so it can't bounce back.
@@ -269,9 +282,7 @@ export async function POST(req: Request) {
   let validatedMessages: ChatUIMessage[]
   try {
     validatedMessages = await validateUIMessages<ChatUIMessage>({
-      messages: alreadyStored
-        ? previousMessages
-        : [...previousMessages, newMessage],
+      messages: alreadyStored ? history : [...history, newMessage],
       tools,
     })
   } catch (error) {
@@ -303,8 +314,9 @@ export async function POST(req: Request) {
           `Your teammates here:\n${teammates.map((teammate) => `- ${teammate.name} (id: ${teammate.id}): ${teammate.job}`).join("\n")}`,
           "Earlier replies may come from teammates; each stretch of a reply starts with its author's name in brackets.",
           handedOverBy
-            ? `The person addressed their latest message to ${handedOverBy.name}, who handed it to you with the handoff tool; their note is in that call. Take it over and answer as yourself, and don't start your reply with your name.`
-            : "The person addressed this message to you, so answer as yourself and don't start your reply with your name.",
+            ? `The person addressed their latest message to ${handedOverBy.name}, who handed it to you with the handoff tool; their note is in that call. Take it over and answer as yourself.`
+            : "The person addressed this message to you, so answer as yourself.",
+          "Never start your reply or any part of it with a name in brackets; the app shows who wrote each reply.",
           "If the request belongs to a teammate's job rather than yours, call handoff with their id instead of answering.",
           "Do not hand off what you can do well yourself. Never pass a request back to a teammate who handed it to you.",
         ].join("\n"),
@@ -404,10 +416,16 @@ export async function POST(req: Request) {
               )
             : responseMessage.parts
         )
-        if (!isWorthSaving(parts)) return
+        // Stored and previewed without a "[Name] " the model copied from the history
+        const cleanParts = isGroup ? withoutNamePrefixes(parts) : parts
+        if (!isWorthSaving(cleanParts)) return
 
         try {
-          await saveMessage(chat.id, { ...responseMessage, parts }, bot.id)
+          await saveMessage(
+            chat.id,
+            { ...responseMessage, parts: cleanParts },
+            bot.id
+          )
         } catch (error) {
           logError("Failed to save assistant message", error)
         }

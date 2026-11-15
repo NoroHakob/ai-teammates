@@ -122,3 +122,38 @@ Browser events go through the tunnel route `/monitoring`; keep it excluded from 
 - Report business events through `events` in `lib/log.ts` with ids and counts only. Never prompts, notes, memory, bot instructions, file contents, sandbox ids or URLs.
 - Call `identifyUser(userId)` after `auth()` in actions and routes. The Clerk user id is the only user data Sentry gets.
 - Don't forward console output to Sentry and don't turn on any data collection (`dataCollection`, AI `recordInputs`/`recordOutputs`, request bodies, headers, cookies, local variables).
+
+## Deployment
+
+Production runs on Railway: `npm run build`, then `npm start` (`next start`, which listens on Railway's `PORT` by itself). Node `>=22` (`engines` in `package.json`).
+
+- Healthcheck path: `/api/health`. It returns `{ "status": "ok" }` and only says the server is up: keep it free of auth, database and service calls. Clerk's `proxy.ts` runs on it but protects nothing, so it is never redirected.
+- The build and the server never need `.env.local`; Railway provides the real environment. Anything that calls `process.loadEnvFile(".env.local")` (`drizzle.config.ts`) must check that the file exists first.
+- `RAILWAY_GIT_COMMIT_SHA` (set by Railway) becomes the Sentry release name in `next.config.ts`.
+
+Environment variables the app needs in production (set them on the Railway service; `NEXT_PUBLIC_*` must be present at build time, since they are inlined into the bundle):
+
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    CLERK_SECRET_KEY
+    NEXT_PUBLIC_CLERK_SIGN_IN_URL
+    NEXT_PUBLIC_CLERK_SIGN_UP_URL
+    NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL
+    NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL
+    DATABASE_URL             Pooled connection, used by the app
+    DATABASE_URL_UNPOOLED    Direct connection, used by drizzle-kit
+    OPENAI_API_KEY
+    DAYTONA_API_KEY
+    CRON_SECRET              Shared with the cron service below
+    NEXT_PUBLIC_SENTRY_DSN
+    SENTRY_ORG
+    SENTRY_PROJECT
+    SENTRY_AUTH_TOKEN
+
+Schema changes are not applied by the deploy. Push them from a local machine with `npm run db:push`, with `DATABASE_URL_UNPOOLED` pointing at the production database.
+
+A separate Railway cron service must, every 5 minutes (`*/5 * * * *`), call:
+
+    POST https://<app-domain>/api/cron/meter-sandboxes
+    Authorization: Bearer $CRON_SECRET
+
+Without it running sandboxes are never metered or stopped when the allowance runs out.

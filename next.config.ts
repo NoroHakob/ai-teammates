@@ -13,6 +13,10 @@ export default withSentryConfig(nextConfig, {
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   authToken: process.env.SENTRY_AUTH_TOKEN,
+  // On Railway the release is the deployed commit; elsewhere the plugin detects one
+  release: process.env.RAILWAY_GIT_COMMIT_SHA
+    ? { name: process.env.RAILWAY_GIT_COMMIT_SHA }
+    : undefined,
   // Browser events go through the app, so ad blockers don't drop them.
   // A fixed path, because proxy.ts must exclude it from its matcher.
   tunnelRoute: "/monitoring",

@@ -1,6 +1,11 @@
+import { existsSync } from "node:fs"
+
 import { defineConfig } from "drizzle-kit"
 
-process.loadEnvFile(".env.local")
+// Locally the credentials live in .env.local; elsewhere the real env vars are used
+if (existsSync(".env.local")) {
+  process.loadEnvFile(".env.local")
+}
 
 export default defineConfig({
   schema: "./db/schema.ts",

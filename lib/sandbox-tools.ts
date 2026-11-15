@@ -4,7 +4,6 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool, type InferUITools, type UIMessage } from "ai"
 import { z } from "zod"
 
-import { featureReasons } from "@/lib/billing"
 import {
   appendBotMemory,
   getBotRunningSandbox,
@@ -84,19 +83,13 @@ function screenshotToModelOutput({ output }: { output: Screenshot }) {
 
 // getBotId: the bot that is answering right now. It can change during a reply
 // (a handoff in a group chat), and the tools then use the new bot's sandbox.
-// canUseSandboxes: the person's plan includes sandboxes. Without it every tool
-// fails here, before anything reaches Daytona.
+// checkAccess: throws if the person may not use a sandbox right now (no plan,
+// or no sandbox time left). Every tool calls it before it touches Daytona.
 export function createSandboxTools(
   getBotId: () => string,
-  canUseSandboxes: boolean
+  checkAccess: () => Promise<void>
 ) {
-  // Every tool, memory and desktop included, gets its sandbox through here
-  const sandboxOf = memoizeBy(async (botId) => {
-    if (!canUseSandboxes) {
-      throw new Error(featureReasons.sandboxes)
-    }
-    return getBotRunningSandbox(botId)
-  })
+  const sandboxOf = memoizeBy((botId) => getBotRunningSandbox(botId))
 
   // The desktop only runs when a desktop tool needs it
   const desktopOf = memoizeBy(async (botId) => {
@@ -108,8 +101,16 @@ export function createSandboxTools(
     return sandbox.computerUse
   })
 
-  const getSandbox = () => sandboxOf(getBotId())
-  const getDesktop = () => desktopOf(getBotId())
+  // Every tool, memory and desktop included, gets its sandbox through these.
+  // The check runs on each use, not only when the sandbox is first loaded.
+  const getSandbox = async () => {
+    await checkAccess()
+    return sandboxOf(getBotId())
+  }
+  const getDesktop = async () => {
+    await checkAccess()
+    return desktopOf(getBotId())
+  }
 
   async function takeScreenshot(sandbox: Sandbox): Promise<Screenshot> {
     const [shot, info] = await Promise.all([
@@ -133,6 +134,7 @@ export function createSandboxTools(
   }
 
   async function screenshot() {
+    await checkAccess()
     // Both from the same bot, even if a handoff happens meanwhile
     const botId = getBotId()
     await desktopOf(botId)

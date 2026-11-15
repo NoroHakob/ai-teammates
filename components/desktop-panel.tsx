@@ -26,6 +26,7 @@ import {
 import { ResizableHandle, ResizablePanel } from "@/components/ui/resizable"
 import { Spinner } from "@/components/ui/spinner"
 import { usePaywall } from "@/hooks/use-paywall"
+import { USAGE_LIMIT_ERROR } from "@/lib/billing"
 
 type DesktopStatus = "idle" | "connecting" | "connected" | "disconnected"
 
@@ -58,6 +59,7 @@ export function DesktopPanelProvider({
 }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<DesktopStatus>("idle")
+  const { check, showUsageLimit } = usePaywall()
 
   // noVNC draws into this div. React never renders it; it is moved between
   // slots, so switching between the panel and fullscreen never reconnects.
@@ -103,13 +105,16 @@ export function DesktopPanelProvider({
         if (isLatest()) setStatus("disconnected")
       })
       rfbRef.current = rfb
-    } catch {
+    } catch (error) {
       // The URL is a credential and errors can carry it, so nothing is logged
-      if (isLatest()) setStatus("disconnected")
+      if (!isLatest()) return
+      setStatus("disconnected")
+      // Production hides server error messages, so this only matches in development
+      if (error instanceof Error && error.message === USAGE_LIMIT_ERROR) {
+        showUsageLimit()
+      }
     }
-  }, [chatId, getScreen])
-
-  const { check } = usePaywall()
+  }, [chatId, getScreen, showUsageLimit])
 
   const toggle = useCallback(() => {
     const next = !open

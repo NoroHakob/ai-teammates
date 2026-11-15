@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm"
 import {
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -102,6 +103,32 @@ export const messages = pgTable(
   ]
 )
 
+// ai: millionths of a dollar; sandbox: seconds of a running sandbox
+export const usageKind = pgEnum("usage_kind", ["ai", "sandbox"])
+
+// Append-only ledger of metered usage, summed per billing period
+export const usageEntries = pgTable(
+  "usage_entries",
+  {
+    id: text()
+      .primaryKey()
+      .$defaultFn(() => nanoid()),
+    // Clerk user ID of the person who pays for it
+    userId: text().notNull(),
+    kind: usageKind().notNull(),
+    amount: integer().notNull(),
+    // The same usage recorded twice (a retry, a rerun cron) counts once
+    idempotencyKey: text().notNull().unique(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("usage_entries_user_id_created_at_idx").on(
+      table.userId,
+      table.createdAt
+    ),
+  ]
+)
+
 export const botsRelations = relations(bots, ({ many }) => ({
   memberships: many(chatMembers),
   messages: many(messages),
@@ -133,6 +160,9 @@ export type NewChatMember = typeof chatMembers.$inferInsert
 
 export type Message = typeof messages.$inferSelect
 export type NewMessage = typeof messages.$inferInsert
+
+export type UsageEntry = typeof usageEntries.$inferSelect
+export type NewUsageEntry = typeof usageEntries.$inferInsert
 
 export const botInsertSchema = createInsertSchema(bots, {
   name: (schema) =>

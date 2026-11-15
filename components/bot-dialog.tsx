@@ -9,6 +9,7 @@ import { Controller, useForm } from "react-hook-form"
 
 import { createBot, deleteBot, updateBot } from "@/actions/bot"
 import { usePaywall } from "@/hooks/use-paywall"
+import { USAGE_LIMIT_ERROR } from "@/lib/billing"
 import { ChatAvatar } from "@/components/chat-avatar"
 import {
   AlertDialog,
@@ -117,6 +118,7 @@ export function BotDialog({
 
 function BotForm({ bot, onSaved }: { bot?: Bot; onSaved: () => void }) {
   const [initialAvatar] = useState(() => bot?.avatar ?? nanoid())
+  const { showUsageLimit } = usePaywall()
 
   const form = useForm({
     resolver: zodResolver(botInsertSchema),
@@ -138,7 +140,12 @@ function BotForm({ bot, onSaved }: { bot?: Bot; onSaved: () => void }) {
         toast.add({ title: `${created.name} is ready`, type: "success" })
       }
       onSaved()
-    } catch {
+    } catch (error) {
+      // Production hides server error messages, so this only matches in development
+      if (error instanceof Error && error.message === USAGE_LIMIT_ERROR) {
+        showUsageLimit()
+        return
+      }
       toast.add({
         title: bot ? "Couldn't update the bot" : "Couldn't create the bot",
         description: "Something went wrong. Try again.",

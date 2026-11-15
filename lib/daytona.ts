@@ -137,6 +137,33 @@ export async function getBotDesktopUrl(botId: string): Promise<string> {
   return wsUrl.toString()
 }
 
+// Every sandbox that is running or about to be, all pages
+export async function listRunningSandboxIds(): Promise<string[]> {
+  const ids: string[] = []
+  // list() fetches page after page by itself
+  for await (const sandbox of getDaytona().list({
+    states: ["started", "starting", "stopping"],
+    limit: 100,
+  })) {
+    ids.push(sandbox.id)
+  }
+  return ids
+}
+
+// Stops a started sandbox; one in any other state, or gone, is left alone.
+// Returns whether it was stopped.
+export async function stopSandbox(sandboxId: string) {
+  try {
+    const sandbox = await getDaytona().get(sandboxId)
+    if (sandbox.state !== "started") return false
+    await sandbox.stop()
+    return true
+  } catch (error) {
+    if (error instanceof DaytonaNotFoundError) return false
+    throw error
+  }
+}
+
 export async function deleteSandbox(sandboxId: string) {
   try {
     const sandbox = await getDaytona().get(sandboxId)

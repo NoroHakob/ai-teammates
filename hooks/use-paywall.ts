@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { useCallback } from "react"
 
 import { toast } from "@/components/ui/toast"
-import { featureReasons, type Feature } from "@/lib/billing"
+import { featureReasons, USAGE_LIMIT_ERROR, type Feature } from "@/lib/billing"
 
 // A convenience for the UI only; the server checks the plan again on every call
 export function usePaywall() {
@@ -30,6 +30,22 @@ export function usePaywall() {
     [router]
   )
 
+  // The plan is fine, but this billing period's allowance is spent
+  const showUsageLimit = useCallback(() => {
+    const id = toast.add({
+      type: "error",
+      title: "Usage limit reached",
+      description: USAGE_LIMIT_ERROR,
+      actionProps: {
+        children: "See usage",
+        onClick: () => {
+          toast.close(id)
+          router.push("/usage")
+        },
+      },
+    })
+  }, [router])
+
   const check = useCallback(
     (feature: Feature) => {
       // Before Clerk has loaded the session, let the server decide
@@ -40,5 +56,5 @@ export function usePaywall() {
     [isLoaded, has, show]
   )
 
-  return { check, show }
+  return { check, show, showUsageLimit }
 }

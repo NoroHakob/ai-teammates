@@ -16,6 +16,7 @@ import {
 import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { getBotDesktopUrl } from "@/lib/daytona"
 import { memberEventMessage } from "@/lib/member-events"
+import { getUsage, USAGE_LIMIT_ERROR } from "@/lib/usage"
 import { getChat } from "@/queries/chats"
 
 export async function createGroupChat(values: GroupChatInsert) {
@@ -180,12 +181,17 @@ export async function deleteGroupChat(chatId: string) {
 
 // The websocket URL of the desktop of the bot behind one of the signed-in user's direct chats
 export async function getDesktopUrl(chatId: string) {
-  const { isAuthenticated, has } = await auth()
+  const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
   }
   if (!hasFeature(has, "sandboxes")) {
     throw new Error(UPGRADE_REQUIRED)
+  }
+  // The desktop runs the sandbox, so it needs sandbox time left
+  const usage = await getUsage(userId)
+  if (!usage || usage.remaining.sandbox <= 0) {
+    throw new Error(USAGE_LIMIT_ERROR)
   }
 
   // getChat only returns the user's own chats

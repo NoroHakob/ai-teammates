@@ -16,6 +16,7 @@ import {
 import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { deleteSandbox } from "@/lib/daytona"
 import { memberEventMessage } from "@/lib/member-events"
+import { getUsage, USAGE_LIMIT_ERROR } from "@/lib/usage"
 
 export async function createBot(values: BotInsert) {
   const { isAuthenticated, userId, has } = await auth()
@@ -25,6 +26,11 @@ export async function createBot(values: BotInsert) {
   // A bot comes with its own sandbox, so it needs both; editing and deleting stay free
   if (!hasFeature(has, "bots") || !hasFeature(has, "sandboxes")) {
     throw new Error(UPGRADE_REQUIRED)
+  }
+  // A new bot is only useful with AI budget and sandbox time left to use it
+  const usage = await getUsage(userId)
+  if (!usage || usage.remaining.ai <= 0 || usage.remaining.sandbox <= 0) {
+    throw new Error(USAGE_LIMIT_ERROR)
   }
 
   const data = botInsertSchema.parse(values)

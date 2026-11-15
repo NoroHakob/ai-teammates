@@ -17,3 +17,7 @@ export function hasFeature(
 ) {
   return has({ feature })
 }
+
+// The server's error once the plan's allowance for this billing period is spent
+export const USAGE_LIMIT_ERROR =
+  "You've used up your usage for this billing period."

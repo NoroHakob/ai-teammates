@@ -1,6 +1,6 @@
 import { UserButton } from "@clerk/nextjs"
 import { formatDistanceToNowStrict } from "date-fns"
-import { CreditCardIcon } from "lucide-react"
+import { CreditCardIcon, GaugeIcon } from "lucide-react"
 import Link from "next/link"
 
 import { ChatAvatar } from "@/components/chat-avatar"
@@ -100,6 +100,12 @@ export async function AppSidebar() {
             >
               <CreditCardIcon />
               <span>Pricing</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton tooltip="Usage" render={<Link href="/usage" />}>
+              <GaugeIcon />
+              <span>Usage</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

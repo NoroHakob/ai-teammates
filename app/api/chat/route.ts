@@ -17,15 +17,21 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db"
 import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
-import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
+import { featureReasons, hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { createHandoffTool, type Handoff } from "@/lib/handoff-tool"
 import { withoutNamePrefixes } from "@/lib/name-prefix"
+import { chatModelCost } from "@/lib/model-pricing"
 import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
+import { getUsage, recordUsage, USAGE_LIMIT_ERROR } from "@/lib/usage"
 import { getChat } from "@/queries/chats"
 import { getMessages } from "@/queries/messages"
 
 const MAX_MESSAGE_LENGTH = 10000
 const MAX_PREVIEW_LENGTH = 100
+// How long a sandbox-time check is trusted within one request
+const SANDBOX_CHECK_TTL_MS = 60_000
+const SANDBOX_HOURS_USED_UP =
+  "The sandbox hours for this billing period are used up."
 
 function textOf(parts: UIMessage["parts"]) {
   return parts.map((part) => (part.type === "text" ? part.text : "")).join(" ")
@@ -165,7 +171,7 @@ function logError(context: string, error: unknown) {
 }
 
 export async function POST(req: Request) {
-  const { isAuthenticated, has } = await auth()
+  const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     return new Response("Unauthorized", { status: 401 })
   }
@@ -174,6 +180,49 @@ export async function POST(req: Request) {
     return new Response(UPGRADE_REQUIRED, { status: 402 })
   }
   const canUseSandboxes = hasFeature(has, "sandboxes")
+
+  // Also before anything is saved: no reply without AI budget left
+  let usage
+  try {
+    usage = await getUsage(userId)
+  } catch (error) {
+    logError("Failed to load usage", error)
+    return new Response("Internal server error", { status: 500 })
+  }
+  if (!usage || usage.remaining.ai <= 0) {
+    return new Response(USAGE_LIMIT_ERROR, { status: 402 })
+  }
+  const aiBudget = usage.remaining.ai
+
+  // Sandbox time left, re-read at most once a minute; starts from the usage above
+  let sandboxCheck = {
+    at: Date.now(),
+    allowed: usage.remaining.sandbox > 0,
+  }
+  // The closures below don't keep the isAuthenticated narrowing
+  const payerId = userId
+  async function checkSandboxAccess() {
+    if (!canUseSandboxes) {
+      throw new Error(featureReasons.sandboxes)
+    }
+    if (Date.now() - sandboxCheck.at >= SANDBOX_CHECK_TTL_MS) {
+      let current
+      try {
+        current = await getUsage(payerId)
+      } catch (error) {
+        // The model and the person see a tool's error, so not this one
+        logError("Failed to load usage", error)
+        throw new Error("Couldn't check the sandbox hours. Try again.")
+      }
+      sandboxCheck = {
+        at: Date.now(),
+        allowed: current !== null && current.remaining.sandbox > 0,
+      }
+    }
+    if (!sandboxCheck.allowed) {
+      throw new Error(SANDBOX_HOURS_USED_UP)
+    }
+  }
 
   // The transport sends only { id, message, botId }: the chat ID, the new user message
   // and, in a group chat, the bot it is addressed to.
@@ -263,7 +312,7 @@ export async function POST(req: Request) {
   const held = new Set([bot.id])
 
   // The sandbox, desktop and memory tools always act for the current bot
-  const sandboxTools = createSandboxTools(() => current.id, canUseSandboxes)
+  const sandboxTools = createSandboxTools(() => current.id, checkSandboxAccess)
   const tools = isGroup
     ? {
         ...sandboxTools,
@@ -345,6 +394,8 @@ export async function POST(req: Request) {
       .join("\n\n")
   }
 
+  const responseMessageId = generateId()
+
   const result = streamText({
     model: chatModel,
     instructions: instructionsFor(bot),
@@ -389,7 +440,29 @@ export async function POST(req: Request) {
       return { instructions: instructionsFor(speaker, handedOverBy) }
     },
     // Each step is a model call; cap the cost of one reply
-    stopWhen: stepCountIs(20),
+    // Also stop once this reply has spent the AI budget that was left
+    stopWhen: [
+      stepCountIs(20),
+      ({ steps }) =>
+        steps.reduce((total, step) => total + chatModelCost(step.usage), 0) >=
+        aiBudget,
+    ],
+    // Every finished model call is charged as it ends, so a reply that is
+    // stopped or fails later still pays for the steps it already took
+    onStepEnd: async (step) => {
+      try {
+        await recordUsage([
+          {
+            userId: payerId,
+            kind: "ai",
+            amount: chatModelCost(step.usage),
+            idempotencyKey: `ai:${responseMessageId}:${step.stepNumber}`,
+          },
+        ])
+      } catch (error) {
+        logError("Failed to record AI usage", error)
+      }
+    },
     abortSignal: req.signal,
     // The default handler logs the whole error, which can include the request body
     onError: ({ error }) => logError("Chat stream failed", error),
@@ -400,7 +473,8 @@ export async function POST(req: Request) {
       stream: result.stream,
       tools,
       originalMessages: validatedMessages,
-      generateMessageId: generateId,
+      // Known up front, so the usage keys can name the reply
+      generateMessageId: () => responseMessageId,
       // Tells the client which bot is writing this reply
       messageMetadata: ({ part }) =>
         part.type === "start" ? { botId: bot.id } : undefined,

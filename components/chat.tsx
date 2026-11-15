@@ -44,7 +44,11 @@ import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import type { Bot } from "@/db/schema"
 import { usePaywall } from "@/hooks/use-paywall"
-import { featureReasons, UPGRADE_REQUIRED } from "@/lib/billing"
+import {
+  featureReasons,
+  UPGRADE_REQUIRED,
+  USAGE_LIMIT_ERROR,
+} from "@/lib/billing"
 import { withoutNamePrefixes } from "@/lib/name-prefix"
 import type { ChatUIMessage, MemberEvent } from "@/lib/sandbox-tools"
 
@@ -272,6 +276,11 @@ export function Chat({
         router.refresh()
       },
       onError: (error) => {
+        // Out of this period's allowance: point to the usage page
+        if (error.message === USAGE_LIMIT_ERROR) {
+          paywall.showUsageLimit()
+          return
+        }
         if (
           (APICallError.isInstance(error) && error.statusCode === 402) ||
           error.message === UPGRADE_REQUIRED

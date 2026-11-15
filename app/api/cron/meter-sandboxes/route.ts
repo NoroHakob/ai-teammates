@@ -23,6 +23,8 @@ function isAuthorized(req: Request) {
   return timingSafeEqual(digest(header), digest(`Bearer ${secret}`))
 }
 
+export const maxDuration = 60
+
 // Called by a scheduler, not a person: no Clerk session, only the secret
 export async function POST(req: Request) {
   if (!isAuthorized(req)) {

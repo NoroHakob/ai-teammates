@@ -30,6 +30,9 @@ const MAX_MESSAGE_LENGTH = 10000
 const MAX_PREVIEW_LENGTH = 100
 // How long a sandbox-time check is trusted within one request
 const SANDBOX_CHECK_TTL_MS = 60_000
+// Vercel Hobby stops a function at 300 s (maxDuration below). No new step
+// starts after this, so the reply ends on its own and onEnd still saves it.
+const REPLY_TIME_LIMIT_MS = 240_000
 const SANDBOX_HOURS_USED_UP =
   "The sandbox hours for this billing period are used up."
 
@@ -152,7 +155,10 @@ function withoutViewScreenImages(parts: ChatUIMessage["parts"]) {
   )
 }
 
+export const maxDuration = 300
+
 export async function POST(req: Request) {
+  const startedAt = Date.now()
   const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     return new Response("Unauthorized", { status: 401 })
@@ -442,6 +448,8 @@ export async function POST(req: Request) {
       ({ steps }) =>
         steps.reduce((total, step) => total + chatModelCost(step.usage), 0) >=
         aiBudget,
+      // Before the platform's time limit cuts the reply off mid-step
+      () => Date.now() - startedAt >= REPLY_TIME_LIMIT_MS,
     ],
     // Every finished model call is charged as it ends, so a reply that is
     // stopped or fails later still pays for the steps it already took

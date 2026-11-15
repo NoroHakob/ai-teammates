@@ -125,13 +125,15 @@ Browser events go through the tunnel route `/monitoring`; keep it excluded from 
 
 ## Deployment
 
-Production runs on Railway: `npm run build`, then `npm start` (`next start`, which listens on Railway's `PORT` by itself). Node `>=22` (`engines` in `package.json`).
+Production runs on Vercel (Hobby plan), built with `npm run build`. Node `>=22` (`engines` in `package.json`).
 
-- Healthcheck path: `/api/health`. It returns `{ "status": "ok" }` and only says the server is up: keep it free of auth, database and service calls. Clerk's `proxy.ts` runs on it but protects nothing, so it is never redirected.
-- The build and the server never need `.env.local`; Railway provides the real environment. Anything that calls `process.loadEnvFile(".env.local")` (`drizzle.config.ts`) must check that the file exists first.
-- `RAILWAY_GIT_COMMIT_SHA` (set by Railway) becomes the Sentry release name in `next.config.ts`.
+- Function time limit: Hobby stops a function at 300 s. `app/api/chat/route.ts` sets `maxDuration = 300` and its `stopWhen` starts no new step after 240 s, so a long reply ends on its own and `onEnd` still saves it. Keep that margin when adding steps or slow tools. `app/api/cron/meter-sandboxes/route.ts` sets `maxDuration = 60`.
+- `/api/health` returns `{ "status": "ok" }` for uptime checks. It only says the server is up: keep it free of auth, database and service calls. Clerk's `proxy.ts` runs on it but protects nothing, so it is never redirected.
+- The build and the server never need `.env.local`; Vercel provides the real environment. Anything that calls `process.loadEnvFile(".env.local")` (`drizzle.config.ts`) must check that the file exists first.
+- `VERCEL_GIT_COMMIT_SHA` (set by Vercel) becomes the Sentry release name in `next.config.ts`.
+- `@daytona/sdk` stays in `serverExternalPackages`. File tracing ships it, but misses `busboy` (and its dependency `streamsearch`), which the SDK `require`s at runtime to download files from a sandbox; `outputFileTracingIncludes` in `next.config.ts` adds them to `/api/chat`. A new route that reads sandbox files needs the same entry.
 
-Environment variables the app needs in production (set them on the Railway service; `NEXT_PUBLIC_*` must be present at build time, since they are inlined into the bundle):
+Environment variables the app needs in production (set them in the Vercel project for the Production environment; `NEXT_PUBLIC_*` are inlined at build time, so redeploy after changing them):
 
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
     CLERK_SECRET_KEY
@@ -143,17 +145,17 @@ Environment variables the app needs in production (set them on the Railway servi
     DATABASE_URL_UNPOOLED    Direct connection, used by drizzle-kit
     OPENAI_API_KEY
     DAYTONA_API_KEY
-    CRON_SECRET              Shared with the cron service below
+    CRON_SECRET              Shared with the external scheduler below
     NEXT_PUBLIC_SENTRY_DSN
     SENTRY_ORG
     SENTRY_PROJECT
     SENTRY_AUTH_TOKEN
 
-Schema changes are not applied by the deploy. Push them from a local machine with `npm run db:push`, with `DATABASE_URL_UNPOOLED` pointing at the production database.
+Schema changes are not applied by the deploy. Push them from a local machine with `npm run db:push`, with `DATABASE_URL_UNPOOLED` pointing at the production Neon branch.
 
-A separate Railway cron service must, every 5 minutes (`*/5 * * * *`), call:
+Vercel Cron on Hobby runs at most once a day, so the sandbox meter is called by an external scheduler (cron-job.org) instead. Don't add `crons` to a `vercel.json`. Every 5 minutes it sends:
 
-    POST https://<app-domain>/api/cron/meter-sandboxes
-    Authorization: Bearer $CRON_SECRET
+    POST https://<production-domain>/api/cron/meter-sandboxes
+    Authorization: Bearer <CRON_SECRET>
 
 Without it running sandboxes are never metered or stopped when the allowance runs out.

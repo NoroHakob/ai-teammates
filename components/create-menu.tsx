@@ -14,10 +14,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import type { Bot } from "@/db/schema"
+import { usePaywall } from "@/hooks/use-paywall"
 
 export function CreateMenu({ bots }: { bots: Bot[] }) {
   const [botDialogOpen, setBotDialogOpen] = useState(false)
   const [groupChatDialogOpen, setGroupChatDialogOpen] = useState(false)
+  const { check } = usePaywall()
 
   return (
     <>
@@ -29,11 +31,20 @@ export function CreateMenu({ bots }: { bots: Bot[] }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
           <DropdownMenuGroup>
-            <DropdownMenuItem onClick={() => setBotDialogOpen(true)}>
+            <DropdownMenuItem
+              onClick={() => {
+                // A new bot comes with a sandbox, so it needs both
+                if (check("bots") && check("sandboxes")) setBotDialogOpen(true)
+              }}
+            >
               <PlusIcon />
               Create new bot
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setGroupChatDialogOpen(true)}>
+            <DropdownMenuItem
+              onClick={() => {
+                if (check("bots")) setGroupChatDialogOpen(true)
+              }}
+            >
               <UsersIcon />
               Create group chat
             </DropdownMenuItem>

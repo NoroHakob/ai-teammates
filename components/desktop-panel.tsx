@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog"
 import { ResizableHandle, ResizablePanel } from "@/components/ui/resizable"
 import { Spinner } from "@/components/ui/spinner"
+import { usePaywall } from "@/hooks/use-paywall"
 
 type DesktopStatus = "idle" | "connecting" | "connected" | "disconnected"
 
@@ -108,14 +109,18 @@ export function DesktopPanelProvider({
     }
   }, [chatId, getScreen])
 
+  const { check } = usePaywall()
+
   const toggle = useCallback(() => {
     const next = !open
+    // Closing is always allowed; opening needs a sandbox
+    if (next && !check("sandboxes")) return
     setOpen(next)
     // Connect on the first open; afterwards the connection outlives a hidden panel
     if (next && status === "idle") {
       void connect()
     }
-  }, [open, status, connect])
+  }, [open, status, connect, check])
 
   const attachScreen = useCallback(
     (slot: HTMLElement) => {

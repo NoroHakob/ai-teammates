@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation"
 import { Controller, useForm } from "react-hook-form"
 
 import { createBot, deleteBot, updateBot } from "@/actions/bot"
+import { usePaywall } from "@/hooks/use-paywall"
 import { ChatAvatar } from "@/components/chat-avatar"
 import {
   AlertDialog,
@@ -86,8 +87,12 @@ export function BotDialog({
 }) {
   const [openState, setOpenState] = useState(false)
   const open = openProp ?? openState
+  const { check } = usePaywall()
 
   function setOpen(next: boolean) {
+    // A new bot comes with a sandbox, so it needs both; editing stays free.
+    // A parent that controls open (the create menu) checks before opening.
+    if (next && !bot && !(check("bots") && check("sandboxes"))) return
     setOpenState(next)
     onOpenChange?.(next)
   }

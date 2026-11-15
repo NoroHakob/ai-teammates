@@ -1,5 +1,7 @@
 import { UserButton } from "@clerk/nextjs"
 import { formatDistanceToNowStrict } from "date-fns"
+import { CreditCardIcon } from "lucide-react"
+import Link from "next/link"
 
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatMenuButton } from "@/components/chat-menu-button"
@@ -14,6 +16,7 @@ import {
   SidebarGroupContent,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
@@ -90,6 +93,15 @@ export async function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip="Pricing"
+              render={<Link href="/pricing" />}
+            >
+              <CreditCardIcon />
+              <span>Pricing</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             {/* Clerk's own styles beat plain utilities, so the SidebarMenuButton classes are mirrored here as important. */}
             <UserButton

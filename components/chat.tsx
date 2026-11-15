@@ -1,7 +1,7 @@
 "use client"
 
 import { useChat } from "@ai-sdk/react"
-import { DefaultChatTransport } from "ai"
+import { APICallError, DefaultChatTransport } from "ai"
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
 
@@ -21,6 +21,7 @@ import {
 import {
   PromptInput,
   PromptInputFooter,
+  PromptInputProvider,
   PromptInputSelect,
   PromptInputSelectContent,
   PromptInputSelectItem,
@@ -42,6 +43,8 @@ import { SelectGroup } from "@/components/ui/select"
 import { Spinner } from "@/components/ui/spinner"
 import { toast } from "@/components/ui/toast"
 import type { Bot } from "@/db/schema"
+import { usePaywall } from "@/hooks/use-paywall"
+import { featureReasons, UPGRADE_REQUIRED } from "@/lib/billing"
 import { withoutNamePrefixes } from "@/lib/name-prefix"
 import type { ChatUIMessage, MemberEvent } from "@/lib/sandbox-tools"
 
@@ -232,6 +235,7 @@ export function Chat({
   initialMessages: ChatUIMessage[]
 }) {
   const router = useRouter()
+  const paywall = usePaywall()
   const [pickedBotId, setPickedBotId] = useState(() => bots?.[0]?.id)
   // The picked bot may have been removed from the group since
   const botId = (bots?.find((bot) => bot.id === pickedBotId) ?? bots?.[0])?.id
@@ -267,7 +271,14 @@ export function Chat({
         // Refresh the sidebar's preview and order
         router.refresh()
       },
-      onError: () => {
+      onError: (error) => {
+        if (
+          (APICallError.isInstance(error) && error.statusCode === 402) ||
+          error.message === UPGRADE_REQUIRED
+        ) {
+          paywall.show(featureReasons.bots)
+          return
+        }
         toast.add({
           type: "error",
           title: "Couldn't get a reply",
@@ -316,6 +327,9 @@ export function Chat({
 
   function onSubmit({ text }: PromptInputMessage) {
     if (!text.trim()) return
+    // PromptInput keeps the draft when onSubmit rejects
+    if (!paywall.check("bots"))
+      return Promise.reject(new Error(UPGRADE_REQUIRED))
     if (bots) {
       sendMessage({ text, metadata: { botId } }, { body: { botId } })
     } else {
@@ -391,55 +405,58 @@ export function Chat({
         <ConversationScrollButton />
       </Conversation>
       <div className="mx-auto w-full max-w-3xl p-4 pt-0">
-        <PromptInput onSubmit={onSubmit}>
-          <PromptInputTextarea placeholder="Send a message..." />
-          <PromptInputFooter className={bots ? undefined : "justify-end"}>
-            {bots && (
-              <PromptInputTools>
-                <PromptInputSelect
-                  items={bots.map((bot) => ({
-                    label: bot.name,
-                    value: bot.id,
-                  }))}
-                  value={botId}
-                  onValueChange={(value) => {
-                    if (typeof value === "string") setPickedBotId(value)
-                  }}
-                >
-                  <PromptInputSelectTrigger aria-label="Send to">
-                    <PromptInputSelectValue>
-                      {(value: string) => {
-                        const bot = botsById.get(value)
-                        return (
-                          bot && (
-                            <>
-                              <ChatAvatar
-                                seed={bot.avatar}
-                                className="size-5"
-                              />
-                              <span className="truncate">{bot.name}</span>
-                            </>
+        {/* Controlled, so a send stopped by the paywall leaves the draft in place */}
+        <PromptInputProvider>
+          <PromptInput onSubmit={onSubmit}>
+            <PromptInputTextarea placeholder="Send a message..." />
+            <PromptInputFooter className={bots ? undefined : "justify-end"}>
+              {bots && (
+                <PromptInputTools>
+                  <PromptInputSelect
+                    items={bots.map((bot) => ({
+                      label: bot.name,
+                      value: bot.id,
+                    }))}
+                    value={botId}
+                    onValueChange={(value) => {
+                      if (typeof value === "string") setPickedBotId(value)
+                    }}
+                  >
+                    <PromptInputSelectTrigger aria-label="Send to">
+                      <PromptInputSelectValue>
+                        {(value: string) => {
+                          const bot = botsById.get(value)
+                          return (
+                            bot && (
+                              <>
+                                <ChatAvatar
+                                  seed={bot.avatar}
+                                  className="size-5"
+                                />
+                                <span className="truncate">{bot.name}</span>
+                              </>
+                            )
                           )
-                        )
-                      }}
-                    </PromptInputSelectValue>
-                  </PromptInputSelectTrigger>
-                  <PromptInputSelectContent>
-                    <SelectGroup>
-                      {bots.map((bot) => (
-                        <PromptInputSelectItem key={bot.id} value={bot.id}>
-                          <ChatAvatar seed={bot.avatar} className="size-5" />
-                          {bot.name}
-                        </PromptInputSelectItem>
-                      ))}
-                    </SelectGroup>
-                  </PromptInputSelectContent>
-                </PromptInputSelect>
-              </PromptInputTools>
-            )}
-            <PromptInputSubmit status={status} onStop={stop} />
-          </PromptInputFooter>
-        </PromptInput>
+                        }}
+                      </PromptInputSelectValue>
+                    </PromptInputSelectTrigger>
+                    <PromptInputSelectContent>
+                      <SelectGroup>
+                        {bots.map((bot) => (
+                          <PromptInputSelectItem key={bot.id} value={bot.id}>
+                            <ChatAvatar seed={bot.avatar} className="size-5" />
+                            {bot.name}
+                          </PromptInputSelectItem>
+                        ))}
+                      </SelectGroup>
+                    </PromptInputSelectContent>
+                  </PromptInputSelect>
+                </PromptInputTools>
+              )}
+              <PromptInputSubmit status={status} onStop={stop} />
+            </PromptInputFooter>
+          </PromptInput>
+        </PromptInputProvider>
       </div>
     </div>
   )

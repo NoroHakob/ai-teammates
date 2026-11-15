@@ -13,13 +13,18 @@ import {
   messages,
   type BotInsert,
 } from "@/db/schema"
+import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { deleteSandbox } from "@/lib/daytona"
 import { memberEventMessage } from "@/lib/member-events"
 
 export async function createBot(values: BotInsert) {
-  const { isAuthenticated, userId } = await auth()
+  const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
+  }
+  // A bot comes with its own sandbox, so it needs both; editing and deleting stay free
+  if (!hasFeature(has, "bots") || !hasFeature(has, "sandboxes")) {
+    throw new Error(UPGRADE_REQUIRED)
   }
 
   const data = botInsertSchema.parse(values)

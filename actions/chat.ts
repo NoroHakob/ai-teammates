@@ -13,14 +13,18 @@ import {
   messages,
   type GroupChatInsert,
 } from "@/db/schema"
+import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { getBotDesktopUrl } from "@/lib/daytona"
 import { memberEventMessage } from "@/lib/member-events"
 import { getChat } from "@/queries/chats"
 
 export async function createGroupChat(values: GroupChatInsert) {
-  const { isAuthenticated, userId } = await auth()
+  const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
+  }
+  if (!hasFeature(has, "bots")) {
+    throw new Error(UPGRADE_REQUIRED)
   }
 
   const data = groupChatInsertSchema.parse(values)
@@ -55,9 +59,12 @@ export async function createGroupChat(values: GroupChatInsert) {
 }
 
 export async function updateGroupChat(chatId: string, values: GroupChatInsert) {
-  const { isAuthenticated, userId } = await auth()
+  const { isAuthenticated, userId, has } = await auth()
   if (!isAuthenticated) {
     throw new Error("Not authenticated")
+  }
+  if (!hasFeature(has, "bots")) {
+    throw new Error(UPGRADE_REQUIRED)
   }
 
   const data = groupChatInsertSchema.parse(values)
@@ -173,7 +180,15 @@ export async function deleteGroupChat(chatId: string) {
 
 // The websocket URL of the desktop of the bot behind one of the signed-in user's direct chats
 export async function getDesktopUrl(chatId: string) {
-  // getChat checks the session and only returns the user's own chats
+  const { isAuthenticated, has } = await auth()
+  if (!isAuthenticated) {
+    throw new Error("Not authenticated")
+  }
+  if (!hasFeature(has, "sandboxes")) {
+    throw new Error(UPGRADE_REQUIRED)
+  }
+
+  // getChat only returns the user's own chats
   const chat = await getChat(chatId)
   // Group chats have several bots, so no single desktop
   if (!chat || chat.kind === "group") {

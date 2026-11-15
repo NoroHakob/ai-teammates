@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db"
 import { chats, messages } from "@/db/schema"
 import { chatModel } from "@/lib/ai"
+import { hasFeature, UPGRADE_REQUIRED } from "@/lib/billing"
 import { createHandoffTool, type Handoff } from "@/lib/handoff-tool"
 import { withoutNamePrefixes } from "@/lib/name-prefix"
 import { createSandboxTools, type ChatUIMessage } from "@/lib/sandbox-tools"
@@ -164,10 +165,15 @@ function logError(context: string, error: unknown) {
 }
 
 export async function POST(req: Request) {
-  const { isAuthenticated } = await auth()
+  const { isAuthenticated, has } = await auth()
   if (!isAuthenticated) {
     return new Response("Unauthorized", { status: 401 })
   }
+  // Before anything is read or saved; the client turns this into the paywall
+  if (!hasFeature(has, "bots")) {
+    return new Response(UPGRADE_REQUIRED, { status: 402 })
+  }
+  const canUseSandboxes = hasFeature(has, "sandboxes")
 
   // The transport sends only { id, message, botId }: the chat ID, the new user message
   // and, in a group chat, the bot it is addressed to.
@@ -257,7 +263,7 @@ export async function POST(req: Request) {
   const held = new Set([bot.id])
 
   // The sandbox, desktop and memory tools always act for the current bot
-  const sandboxTools = createSandboxTools(() => current.id)
+  const sandboxTools = createSandboxTools(() => current.id, canUseSandboxes)
   const tools = isGroup
     ? {
         ...sandboxTools,

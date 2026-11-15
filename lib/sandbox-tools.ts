@@ -4,6 +4,7 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool, type InferUITools, type UIMessage } from "ai"
 import { z } from "zod"
 
+import { featureReasons } from "@/lib/billing"
 import {
   appendBotMemory,
   getBotRunningSandbox,
@@ -83,8 +84,19 @@ function screenshotToModelOutput({ output }: { output: Screenshot }) {
 
 // getBotId: the bot that is answering right now. It can change during a reply
 // (a handoff in a group chat), and the tools then use the new bot's sandbox.
-export function createSandboxTools(getBotId: () => string) {
-  const sandboxOf = memoizeBy((botId) => getBotRunningSandbox(botId))
+// canUseSandboxes: the person's plan includes sandboxes. Without it every tool
+// fails here, before anything reaches Daytona.
+export function createSandboxTools(
+  getBotId: () => string,
+  canUseSandboxes: boolean
+) {
+  // Every tool, memory and desktop included, gets its sandbox through here
+  const sandboxOf = memoizeBy(async (botId) => {
+    if (!canUseSandboxes) {
+      throw new Error(featureReasons.sandboxes)
+    }
+    return getBotRunningSandbox(botId)
+  })
 
   // The desktop only runs when a desktop tool needs it
   const desktopOf = memoizeBy(async (botId) => {
